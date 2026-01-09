@@ -1,0 +1,9 @@
+# Ignore all files starting with a dot
+.*
+
+# But do not ignore this file
+!.gitignore
+__pycache__/
+wtconv_model/data
+data
+wandb
