@@ -49,3 +49,76 @@ Based on the paper:
 ## Authors
 
 Amit Aflalo & Mohamad Essa
+
+## Usage
+
+### CUDA / Metal (PyTorch)
+
+The PyTorch implementation auto-detects CUDA or MPS (Metal) devices. You can also manually specify usage.
+
+```python
+import torch
+from wtconv_model.wtconv import WTConv2d
+
+# 1. Auto-detect device (CUDA or MPS)
+model = WTConv2d(in_channels=64, out_channels=64, kernel_size=5, wt_levels=2)
+
+# 2. Key functionality
+x = torch.randn(2, 64, 128, 128).to(model.device)
+y = model(x)  # Forward pass
+
+# 3. Explicit device
+model_cuda = WTConv2d(64, 64, device='cuda')
+model_mps = WTConv2d(64, 64, device='mps')
+```
+
+### TPU (JAX/Flax)
+
+The JAX implementation is optimized for TPUs using NHWC layout and Flax.
+
+```python
+import jax
+import jax.numpy as jnp
+from wtconv_model.wtconv_tpu import WTConv2d
+
+# Initialize parameters
+key = jax.random.PRNGKey(0)
+model = WTConv2d(channels=64, kernel_size=5, depth=2)
+x = jax.random.normal(key, (2, 128, 128, 64)) # NHWC
+
+# Init and Apply
+variables = model.init(key, x)
+output = model.apply(variables, x)
+```
+
+### Triton
+Run correctness tests for the Triton implementation:
+```bash
+python tests/triton_tests/test_wtconv_correctness.py
+```
+
+## Project Structure
+
+```
+├── wtconv_model/      # Flash WTConv implementations
+├── cuda_haar/         # CUDA kernels
+├── metal_haar/        # Metal shaders
+├── tpu_haar/          # TPU ops
+├── triton_haar/       # Triton kernels
+├── tests/             # Test suites
+└── WTConv/            # Naive reference implementation (Cloned from original WTConv repository)
+```
+
+### Triton (PyTorch)
+
+A pure Triton implementation for CUDA/ROCm GPUs (requires no CUDA toolkit compilation).
+
+```python
+import torch
+from wtconv_model.wtconv_triton import WTConv2d
+
+# Usage matches the standard PyTorch module
+model = WTConv2d(in_channels=64, out_channels=64, wt_levels=2).cuda()
+x = torch.randn(2, 64, 128, 128).cuda()
+y = model(x)
+```
