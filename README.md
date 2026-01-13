@@ -91,24 +91,6 @@ variables = model.init(key, x)
 output = model.apply(variables, x)
 ```
 
-### Triton
-Run correctness tests for the Triton implementation:
-```bash
-python tests/triton_tests/test_wtconv_correctness.py
-```
-
-## Project Structure
-
-```
-├── wtconv_model/      # Flash WTConv implementations
-├── cuda_haar/         # CUDA kernels
-├── metal_haar/        # Metal shaders
-├── tpu_haar/          # TPU ops
-├── triton_haar/       # Triton kernels
-├── tests/             # Test suites
-└── WTConv/            # Naive reference implementation (Cloned from original WTConv repository)
-```
-
 ### Triton (PyTorch)
 
 A pure Triton implementation for CUDA/ROCm GPUs (requires no CUDA toolkit compilation).
@@ -121,4 +103,16 @@ from wtconv_model.wtconv_triton import WTConv2d
 model = WTConv2d(in_channels=64, out_channels=64, wt_levels=2).cuda()
 x = torch.randn(2, 64, 128, 128).cuda()
 y = model(x)
+```
+
+## Project Structure
+
+```
+├── wtconv_model/      # Flash WTConv implementations
+├── cuda_haar/         # CUDA kernels
+├── metal_haar/        # Metal shaders
+├── tpu_haar/          # TPU ops
+├── triton_haar/       # Triton kernels
+├── tests/             # Test suites
+└── WTConv/            # Naive reference implementation
 ```
