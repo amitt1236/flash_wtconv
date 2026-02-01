@@ -71,9 +71,19 @@ __global__ void haar2d_double_cascade_kernel(
     const T* __restrict__ input, T* __restrict__ level1, T* __restrict__ level2,
     int H, int W, int H2, int W2, int H4, int W4
 ) {
-    const int tx = threadIdx.x + blockIdx.x * blockDim.x;
-    const int ty = threadIdx.y + blockIdx.y * blockDim.y;
-    const int bc = blockIdx.z;
+    const int tiles_x = (W4 + 15) / 16;
+    const int tiles_y = (H4 + 15) / 16;
+    const int tiles_area = tiles_x * tiles_y;
+    
+    if (tiles_area == 0) return;
+
+    const int bc = blockIdx.x / tiles_area;
+    const int tile_idx = blockIdx.x % tiles_area;
+    const int tile_y = tile_idx / tiles_x;
+    const int tile_x = tile_idx % tiles_x;
+
+    const int tx = threadIdx.x + tile_x * blockDim.x;
+    const int ty = threadIdx.y + tile_y * blockDim.y;
     
     // Each thread processes a 4x4 input block -> 2x2 level1 -> 1x1 level2
     const int x_base = tx * 4, y_base = ty * 4;
@@ -152,10 +162,20 @@ __global__ void haar2d_triple_cascade_kernel(
     const int tx = threadIdx.x;  // 0-15
     const int ty = threadIdx.y;  // 0-15
     const int tid = ty * 16 + tx;
-    const int bc = blockIdx.z;
+    
+    // Grid decode
+    const int tiles_x = (W + 31) / 32;
+    const int tiles_y = (H + 31) / 32;
+    const int tiles_area = tiles_x * tiles_y;
+
+    if (tiles_area == 0) return;
+
+    const int bc = blockIdx.x / tiles_area;
+    const int tile_idx = blockIdx.x % tiles_area;
+    const int tile_y = tile_idx / tiles_x;
+    const int tile_x = tile_idx % tiles_x;
     
     // Each block of 16x16 threads processes 32x32 input -> 16x16 level1 -> 8x8 level2 -> 4x4 level3
-    const int tile_x = blockIdx.x, tile_y = blockIdx.y;
     const int x_base = tile_x * 32 + tx * 2;
     const int y_base = tile_y * 32 + ty * 2;
     
@@ -279,8 +299,19 @@ __global__ void haar2d_quad_cascade_kernel(
     __shared__ float smem_ll[16][16];
     
     const int tx = threadIdx.x, ty = threadIdx.y;
-    const int bc = blockIdx.z;
-    const int tile_x = blockIdx.x, tile_y = blockIdx.y;
+
+    // Grid decode
+    const int tiles_x = (W + 31) / 32;
+    const int tiles_y = (H + 31) / 32;
+    const int tiles_area = tiles_x * tiles_y;
+
+    if (tiles_area == 0) return;
+
+    const int bc = blockIdx.x / tiles_area;
+    const int tile_idx = blockIdx.x % tiles_area;
+    const int tile_y = tile_idx / tiles_x;
+    const int tile_x = tile_idx % tiles_x;
+    
     const int x_base = tile_x * 32 + tx * 2;
     const int y_base = tile_y * 32 + ty * 2;
     
@@ -377,8 +408,19 @@ __global__ void haar2d_quint_cascade_kernel(
     
     const int tx = threadIdx.x, ty = threadIdx.y;
     const int tid = ty * 16 + tx;
-    const int bc = blockIdx.z;
-    const int tile_x = blockIdx.x, tile_y = blockIdx.y;
+    
+    // Grid decode
+    const int tiles_x = (W + 31) / 32;
+    const int tiles_y = (H + 31) / 32;
+    const int tiles_area = tiles_x * tiles_y;
+
+    if (tiles_area == 0) return;
+
+    const int bc = blockIdx.x / tiles_area;
+    const int tile_idx = blockIdx.x % tiles_area;
+    const int tile_y = tile_idx / tiles_x;
+    const int tile_x = tile_idx % tiles_x;
+
     const int x_base = tile_x * 32 + tx * 2;
     const int y_base = tile_y * 32 + ty * 2;
     
@@ -495,7 +537,12 @@ void haar2d_double_cascade(torch::Tensor input, torch::Tensor level1, torch::Ten
     
     // Each thread processes 4x4 input
     dim3 block(16, 16);
-    dim3 grid((W4 + 15) / 16, (H4 + 15) / 16, B * C);
+    // Linearize grid to avoid Z-limit overflow (65535) with large B*C
+    int tiles_x = (W4 + 15) / 16;
+    int tiles_y = (H4 + 15) / 16;
+    long long total_tiles = (long long)tiles_x * tiles_y * B * C;
+    dim3 grid(total_tiles, 1, 1);
+    
     bool even = (H % 4 == 0) && (W % 4 == 0);
     
     auto dtype = input.dtype();
@@ -526,10 +573,13 @@ void haar2d_triple_cascade(torch::Tensor input, torch::Tensor level1, torch::Ten
     int H8 = level3.size(3), W8 = level3.size(4);
     
     dim3 block(16, 16);
-    dim3 grid((H8 + 3) / 4, (H8 + 3) / 4, B * C);  // One block per 32x32 tile
-    grid.x = (W + 31) / 32;
-    grid.y = (H + 31) / 32;
-    bool even = (H % 2 == 0) && (W % 2 == 0);
+    // Tiling logic: one block per 32x32 input tile
+    int tiles_x = (W + 31) / 32;
+    int tiles_y = (H + 31) / 32;
+    long long total_tiles = (long long)tiles_x * tiles_y * B * C;
+    dim3 grid(total_tiles, 1, 1);
+
+    bool even = (H % 8 == 0) && (W % 8 == 0);
     
     auto dtype = input.dtype();
     if (dtype == torch::kFloat32) {
@@ -563,8 +613,13 @@ void haar2d_quad_cascade(torch::Tensor input, torch::Tensor level1, torch::Tenso
     int H16 = level4.size(3), W16 = level4.size(4);
     
     dim3 block(16, 16);
-    dim3 grid((W + 31) / 32, (H + 31) / 32, B * C);
-    bool even = (H % 2 == 0) && (W % 2 == 0);
+    // Tiling logic: same as triple, one block per 32x32 input tile
+    int tiles_x = (W + 31) / 32;
+    int tiles_y = (H + 31) / 32;
+    long long total_tiles = (long long)tiles_x * tiles_y * B * C;
+    dim3 grid(total_tiles, 1, 1);
+    
+    bool even = (H % 16 == 0) && (W % 16 == 0);
     
     auto dtype = input.dtype();
     if (dtype == torch::kFloat32) {
@@ -602,8 +657,13 @@ void haar2d_quint_cascade(torch::Tensor input, torch::Tensor level1, torch::Tens
     int H32 = level5.size(3), W32 = level5.size(4);
     
     dim3 block(16, 16);
-    dim3 grid((W + 31) / 32, (H + 31) / 32, B * C);
-    bool even = (H % 2 == 0) && (W % 2 == 0);
+    // Tiling logic: same as triple, one block per 32x32 input tile
+    int tiles_x = (W + 31) / 32;
+    int tiles_y = (H + 31) / 32;
+    long long total_tiles = (long long)tiles_x * tiles_y * B * C;
+    dim3 grid(total_tiles, 1, 1);
+    
+    bool even = (H % 32 == 0) && (W % 32 == 0);
     
     auto dtype = input.dtype();
     if (dtype == torch::kFloat32) {

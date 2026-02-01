@@ -187,9 +187,6 @@ def main():
             current_size = 'S'
         elif 'ConvNeXt-B' in name and 'WT' not in name:
             current_size = 'B'
-        
-        if not ('ConvNeXt-B' in name and "CUDA" in name):
-            continue
 
         model = model_factory()
         throughput = benchmark_model(model, device)

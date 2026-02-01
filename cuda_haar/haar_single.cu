@@ -46,9 +46,21 @@ __global__ void haar2d_forward_kernel(
     T* __restrict__ output,
     int C, int H, int W, int H2, int W2
 ) {
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
-    int y = threadIdx.y + blockIdx.y * blockDim.y;
-    int bc = blockIdx.z;  // Combined batch*channel index
+    // Grid decode
+    // Block size 32x8
+    const int tiles_x = (W2 + 31) / 32;
+    const int tiles_y = (H2 + 7) / 8;
+    const int tiles_area = tiles_x * tiles_y;
+
+    if (tiles_area == 0) return;
+
+    const int bc = blockIdx.x / tiles_area;
+    const int tile_idx = blockIdx.x % tiles_area;
+    const int tile_y = tile_idx / tiles_x;
+    const int tile_x = tile_idx % tiles_x;
+
+    const int x = threadIdx.x + tile_x * blockDim.x;
+    const int y = threadIdx.y + tile_y * blockDim.y;
     
     if (y < H2 && x < W2) {
         int x0 = 2 * x, x1 = min(2 * x + 1, W - 1);
@@ -85,9 +97,21 @@ __global__ void haar2d_backward_kernel(
     T* __restrict__ grad_input,          // (B*C, H, W)
     int H, int W, int H2, int W2
 ) {
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
-    int y = threadIdx.y + blockIdx.y * blockDim.y;
-    int bc = blockIdx.z;  // Combined batch*channel index
+    // Grid decode
+    // Block size 32x8
+    const int tiles_x = (W2 + 31) / 32;
+    const int tiles_y = (H2 + 7) / 8;
+    const int tiles_area = tiles_x * tiles_y;
+
+    if (tiles_area == 0) return;
+
+    const int bc = blockIdx.x / tiles_area;
+    const int tile_idx = blockIdx.x % tiles_area;
+    const int tile_y = tile_idx / tiles_x;
+    const int tile_x = tile_idx % tiles_x;
+
+    const int x = threadIdx.x + tile_x * blockDim.x;
+    const int y = threadIdx.y + tile_y * blockDim.y;
     
     if (y < H2 && x < W2) {
         int plane = H2 * W2;
@@ -130,7 +154,10 @@ void haar2d_forward(torch::Tensor input, torch::Tensor output) {
     int W2 = (W + 1) / 2;
     
     dim3 block(32, 8);
-    dim3 grid((W2 + 31) / 32, (H2 + 7) / 8, B * C);
+    int tiles_x = (W2 + 31) / 32;
+    int tiles_y = (H2 + 7) / 8;
+    long long total_tiles = (long long)tiles_x * tiles_y * B * C;
+    dim3 grid(total_tiles, 1, 1);
     
     if (input.dtype() == torch::kFloat32) {
         haar2d_forward_kernel<float><<<grid, block>>>(
@@ -167,7 +194,10 @@ void haar2d_backward(torch::Tensor grad_output, torch::Tensor grad_input) {
     int W = grad_input.size(3);
     
     dim3 block(32, 8);
-    dim3 grid((W2 + 31) / 32, (H2 + 7) / 8, B * C);
+    int tiles_x = (W2 + 31) / 32;
+    int tiles_y = (H2 + 7) / 8;
+    long long total_tiles = (long long)tiles_x * tiles_y * B * C;
+    dim3 grid(total_tiles, 1, 1);
     
     if (grad_output.dtype() == torch::kFloat32) {
         haar2d_backward_kernel<float><<<grid, block>>>(
