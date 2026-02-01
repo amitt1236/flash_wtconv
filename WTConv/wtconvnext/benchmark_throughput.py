@@ -31,7 +31,7 @@ from wtconvnext import wtconvnext_tiny, wtconvnext_small, wtconvnext_base
 # =============================================================================
 # Configuration flags
 # =============================================================================
-BENCHMARK_TRITON = False  # Set to True to include Triton benchmarks
+BENCHMARK_TRITON = True  # Set to True to include Triton benchmarks
 
 
 # Lazy-loaded WTConv classes
