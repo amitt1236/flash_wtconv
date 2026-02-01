@@ -23,6 +23,7 @@ import torch
 import timm
 
 # Add parent directory to path for custom wtconv implementations
+sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from wtconvnext import wtconvnext_tiny, wtconvnext_small, wtconvnext_base
