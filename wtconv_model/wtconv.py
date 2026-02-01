@@ -43,6 +43,7 @@ class WTConv2d(nn.Module):
         in_channels: int,
         out_channels: int,
         kernel_size: int = 5,
+        stride: int = 1,
         wt_levels: int = 1,
         bias: bool = True,
         device: str = None
@@ -55,6 +56,13 @@ class WTConv2d(nn.Module):
         self.in_channels = in_channels
         self.wt_levels = wt_levels
         self.kernel_size = kernel_size
+        self.stride = stride
+        
+        # Stride support via average pooling (matches original implementation)
+        if stride > 1:
+            self.do_stride = nn.AvgPool2d(kernel_size=1, stride=stride)
+        else:
+            self.do_stride = None
         
         # Auto-detect device if not specified
         if device is None:
@@ -129,7 +137,12 @@ class WTConv2d(nn.Module):
         if self.base_conv.bias is not None:
             base_out = base_out + self.base_conv.bias.view(1, -1, 1, 1)
         
-        return base_out + output_wt
+        output = base_out + output_wt
+        
+        if self.do_stride is not None:
+            output = self.do_stride(output)
+        
+        return output
     
     def _apply_conv(self, coeffs: torch.Tensor, level: int, padding: int, haar) -> torch.Tensor:
         B, C, _, h, w = coeffs.shape

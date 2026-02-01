@@ -43,6 +43,7 @@ class WTConv2d(nn.Module):
         in_channels: int,
         out_channels: int,
         kernel_size: int = 5,
+        stride: int = 1,
         wt_levels: int = 1,
         bias: bool = True,
     ):
@@ -54,6 +55,13 @@ class WTConv2d(nn.Module):
         self.in_channels = in_channels
         self.wt_levels = wt_levels
         self.kernel_size = kernel_size
+        self.stride = stride
+        
+        # Stride support via average pooling (matches original implementation)
+        if stride > 1:
+            self.do_stride = nn.AvgPool2d(kernel_size=1, stride=stride)
+        else:
+            self.do_stride = None
         
         # Base conv parameters
         self.base_weight = nn.Parameter(
@@ -134,26 +142,31 @@ class WTConv2d(nn.Module):
         # Eliminates separate add by fusing into iHaar kernel
         # ---------------------------------------------------------------------
         if self.wt_levels == 1:
-            return ihaar2d_fused(level_outputs[0], base_out, output_size=(H, W))
+            output = ihaar2d_fused(level_outputs[0], base_out, output_size=(H, W))
             
         elif self.wt_levels == 2:
-            return ihaar2d_double_fused(
+            output = ihaar2d_double_fused(
                 level_outputs[0], level_outputs[1], base_out, (H, W)
             )
             
         elif self.wt_levels == 3:
-            return ihaar2d_triple_fused(
+            output = ihaar2d_triple_fused(
                 level_outputs[0], level_outputs[1], level_outputs[2], base_out, (H, W)
             )
             
         elif self.wt_levels == 4:
-            return ihaar2d_quad_fused(
+            output = ihaar2d_quad_fused(
                 level_outputs[0], level_outputs[1], level_outputs[2], level_outputs[3],
                 base_out, (H, W)
             )
             
         else:  # 5 levels
-            return ihaar2d_quint_fused(
+            output = ihaar2d_quint_fused(
                 level_outputs[0], level_outputs[1], level_outputs[2], level_outputs[3], level_outputs[4],
                 base_out, (H, W)
             )
+        
+        if self.do_stride is not None:
+            output = self.do_stride(output)
+        
+        return output
