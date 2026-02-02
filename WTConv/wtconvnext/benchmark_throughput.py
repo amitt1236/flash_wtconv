@@ -25,6 +25,8 @@ os.environ["TRITON_CACHE_DIR"] = os.path.expanduser("~/.triton/cache")
 # Suppress torch.compile warnings
 warnings.filterwarnings("ignore", message=".*_maybe_guard_rel.*")
 warnings.filterwarnings("ignore", message=".*recompile_limit.*")
+warnings.filterwarnings("ignore", message=".*pow_by_natural.*")
+
 
 from pathlib import Path
 from contextlib import redirect_stdout, redirect_stderr
@@ -168,7 +170,7 @@ def main():
     ]
     
     if BENCHMARK_REGULAR:
-        models.append(('WTConvNeXt-T', lambda: wtconvnext_tiny(pretrained=False), False))
+        models.append(('WTConvNeXt-T', lambda: wtconvnext_tiny(pretrained=False, conv_mlp=True), False))
     
     if BENCHMARK_CUDA:
         models.append(('WTConvNeXt-T (CUDA)', lambda: create_wtconvnext_cuda('tiny'), False))
@@ -181,7 +183,7 @@ def main():
     ])
     
     if BENCHMARK_REGULAR:
-        models.append(('WTConvNeXt-S', lambda: wtconvnext_small(pretrained=False), False))
+        models.append(('WTConvNeXt-S', lambda: wtconvnext_small(pretrained=False, conv_mlp=True), False))
     
     if BENCHMARK_CUDA:
         models.append(('WTConvNeXt-S (CUDA)', lambda: create_wtconvnext_cuda('small'), False))
@@ -195,7 +197,7 @@ def main():
     ])
     
     if BENCHMARK_REGULAR:
-        models.append(('WTConvNeXt-B', lambda: wtconvnext_base(pretrained=False), False))
+        models.append(('WTConvNeXt-B', lambda: wtconvnext_base(pretrained=False, conv_mlp=True), False))
     
     if BENCHMARK_CUDA:
         models.append(('WTConvNeXt-B (CUDA)', lambda: create_wtconvnext_cuda('base'), False))
