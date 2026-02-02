@@ -9,6 +9,7 @@ Used by `wtconv_hybrid.py`.
 """
 
 import torch
+import torch._dynamo
 import triton
 import triton.language as tl
 from typing import Tuple
@@ -484,6 +485,7 @@ def _compute_haar_coeffs(x: torch.Tensor) -> torch.Tensor:
     return output
 
 
+@torch._dynamo.allow_in_graph
 class FusedHaarConvScaleFunction(torch.autograd.Function):
     """
     Autograd function for fused Haar -> Conv -> Scale.

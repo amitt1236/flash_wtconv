@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 import math
 import torch
+import torch._dynamo
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -95,6 +96,7 @@ class WTConv2d(nn.Module):
                 torch.ones(1, in_channels * 4, 1, 1) * 0.1
             ))
     
+    @torch._dynamo.disable
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
         

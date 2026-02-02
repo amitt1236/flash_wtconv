@@ -11,6 +11,7 @@ Optimizations:
 """
 
 import torch
+import torch._dynamo
 import triton
 import triton.language as tl
 from typing import Tuple, Optional
@@ -370,6 +371,7 @@ def run_haar_cascade(x, num_levels):
     return levels
 
 
+@torch._dynamo.allow_in_graph
 class InverseHaarCascadeFn(torch.autograd.Function):
     """
     Autograd function for Inverse Haar Cascade.
@@ -397,6 +399,7 @@ class InverseHaarCascadeFn(torch.autograd.Function):
         return (None, *grads)
 
 
+@torch._dynamo.allow_in_graph
 class InverseHaarCascadeFusedFn(torch.autograd.Function):
     """
     Autograd function for Inverse Haar Cascade with fused addition.
