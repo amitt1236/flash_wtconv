@@ -25,7 +25,7 @@ os.environ["TRITON_CACHE_DIR"] = os.path.expanduser("~/.triton/cache")
 # Suppress torch.compile warnings
 warnings.filterwarnings("ignore", message=".*_maybe_guard_rel.*")
 warnings.filterwarnings("ignore", message=".*recompile_limit.*")
-warnings.filterwarnings("ignore", message=".*pow_by_natural.*")
+warnings.filterwarnings("ignore", message=".*pow_by_natural*")
 
 
 from pathlib import Path
@@ -49,9 +49,11 @@ from wtconvnext import wtconvnext_tiny, wtconvnext_small, wtconvnext_base
 # =============================================================================
 BENCHMARK_TRITON = True  # Set to True to include Triton benchmarks
 BENCHMARK_CUDA = True  # Set to True to include CUDA benchmarks
-BENCHMARK_REGULAR = True  # Set to True to include regular/naive WTConvNeXt benchmarks
+BENCHMARK_REGULAR = False  # Set to True to include regular/naive WTConvNeXt benchmarks
 USE_TORCH_COMPILE = True  # Set to True to wrap models with torch.compile() - incompatible with custom Triton kernels
 CONVNEXT_KERNEL_SIZE = 7  # Kernel size for ConvNeXt depthwise convolutions (default: 7)
+WTCONVNEXT_KERNEL_SIZE = 5  # Kernel size for WTConvNeXt depthwise convolutions (default: 5)
+USE_CONV_MLP = True  # Use 1x1 conv in MLP
 
 
 # Lazy-loaded WTConv classes
@@ -83,22 +85,22 @@ def create_wtconvnext_cuda(size='tiny'):
     """Create WTConvNeXt using CUDA Haar kernels."""
     WTConv2dCUDA = _get_wtconv_cuda()
     if size == 'tiny':
-        return wtconvnext_tiny(pretrained=False, wtconv_class=WTConv2dCUDA, conv_mlp=True)
+        return wtconvnext_tiny(pretrained=False, wtconv_class=WTConv2dCUDA, conv_mlp=USE_CONV_MLP, kernel_sizes=WTCONVNEXT_KERNEL_SIZE)
     elif size == 'small':
-        return wtconvnext_small(pretrained=False, wtconv_class=WTConv2dCUDA, conv_mlp=True)
+        return wtconvnext_small(pretrained=False, wtconv_class=WTConv2dCUDA, conv_mlp=USE_CONV_MLP, kernel_sizes=WTCONVNEXT_KERNEL_SIZE)
     else:
-        return wtconvnext_base(pretrained=False, wtconv_class=WTConv2dCUDA, conv_mlp=True)
+        return wtconvnext_base(pretrained=False, wtconv_class=WTConv2dCUDA, conv_mlp=USE_CONV_MLP, kernel_sizes=WTCONVNEXT_KERNEL_SIZE)
 
 
 def create_wtconvnext_triton(size='tiny'):
     """Create WTConvNeXt using Triton kernels."""
     WTConv2dTriton = _get_wtconv_triton()
     if size == 'tiny':
-        return wtconvnext_tiny(pretrained=False, wtconv_class=WTConv2dTriton, conv_mlp=True)
+        return wtconvnext_tiny(pretrained=False, wtconv_class=WTConv2dTriton, conv_mlp=USE_CONV_MLP, kernel_sizes=WTCONVNEXT_KERNEL_SIZE)
     elif size == 'small':
-        return wtconvnext_small(pretrained=False, wtconv_class=WTConv2dTriton, conv_mlp=True)
+        return wtconvnext_small(pretrained=False, wtconv_class=WTConv2dTriton, conv_mlp=USE_CONV_MLP, kernel_sizes=WTCONVNEXT_KERNEL_SIZE)
     else:
-        return wtconvnext_base(pretrained=False, wtconv_class=WTConv2dTriton, conv_mlp=True)
+        return wtconvnext_base(pretrained=False, wtconv_class=WTConv2dTriton, conv_mlp=USE_CONV_MLP, kernel_sizes=WTCONVNEXT_KERNEL_SIZE)
 
 
 def benchmark_model(model, device, batch_size=64, warmup_batches=50, measure_batches=300):
@@ -166,11 +168,11 @@ def main():
     # Build model list based on configuration
     models = [
         # Tiny variants
-        ('ConvNeXt-T', lambda: timm.create_model('convnext_tiny', pretrained=False, kernel_sizes=CONVNEXT_KERNEL_SIZE, conv_mlp=True), True),
+        ('ConvNeXt-T', lambda: timm.create_model('convnext_tiny', pretrained=False, kernel_sizes=CONVNEXT_KERNEL_SIZE, conv_mlp=USE_CONV_MLP), True),
     ]
     
     if BENCHMARK_REGULAR:
-        models.append(('WTConvNeXt-T', lambda: wtconvnext_tiny(pretrained=False, conv_mlp=True), False))
+        models.append(('WTConvNeXt-T', lambda: wtconvnext_tiny(pretrained=False, conv_mlp=USE_CONV_MLP, kernel_sizes=WTCONVNEXT_KERNEL_SIZE), False))
     
     if BENCHMARK_CUDA:
         models.append(('WTConvNeXt-T (CUDA)', lambda: create_wtconvnext_cuda('tiny'), False))
@@ -179,11 +181,11 @@ def main():
         models.append(('WTConvNeXt-T (Triton)', lambda: create_wtconvnext_triton('tiny'), False))
     
     models.extend([
-        ('ConvNeXt-S', lambda: timm.create_model('convnext_small', pretrained=False, kernel_sizes=CONVNEXT_KERNEL_SIZE, conv_mlp=True), True),
+        ('ConvNeXt-S', lambda: timm.create_model('convnext_small', pretrained=False, kernel_sizes=CONVNEXT_KERNEL_SIZE, conv_mlp=USE_CONV_MLP), True),
     ])
     
     if BENCHMARK_REGULAR:
-        models.append(('WTConvNeXt-S', lambda: wtconvnext_small(pretrained=False, conv_mlp=True), False))
+        models.append(('WTConvNeXt-S', lambda: wtconvnext_small(pretrained=False, conv_mlp=USE_CONV_MLP, kernel_sizes=WTCONVNEXT_KERNEL_SIZE), False))
     
     if BENCHMARK_CUDA:
         models.append(('WTConvNeXt-S (CUDA)', lambda: create_wtconvnext_cuda('small'), False))
@@ -193,11 +195,11 @@ def main():
     
     # Base variants  
     models.extend([
-        ('ConvNeXt-B', lambda: timm.create_model('convnext_base', pretrained=False, kernel_sizes=CONVNEXT_KERNEL_SIZE, conv_mlp=True), True),
+        ('ConvNeXt-B', lambda: timm.create_model('convnext_base', pretrained=False, kernel_sizes=CONVNEXT_KERNEL_SIZE, conv_mlp=USE_CONV_MLP), True),
     ])
     
     if BENCHMARK_REGULAR:
-        models.append(('WTConvNeXt-B', lambda: wtconvnext_base(pretrained=False, conv_mlp=True), False))
+        models.append(('WTConvNeXt-B', lambda: wtconvnext_base(pretrained=False, conv_mlp=USE_CONV_MLP, kernel_sizes=WTCONVNEXT_KERNEL_SIZE), False))
     
     if BENCHMARK_CUDA:
         models.append(('WTConvNeXt-B (CUDA)', lambda: create_wtconvnext_cuda('base'), False))
