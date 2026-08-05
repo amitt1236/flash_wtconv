@@ -132,6 +132,163 @@ __global__ void fused_haar_conv_scale_kernel(
 }
 
 // -----------------------------------------------------------------------------
+// Fully fused level: Haar -> conv -> scale -> (+ deeper reconstruction) ->
+// inverse Haar -> (+ base conv) -> output, at full resolution.
+//
+// The inverse transform is pointwise per 2x2 block: once a thread holds the four
+// convolved subbands in registers, reconstructing its 2x2 output block is four
+// butterflies. It needs no halo and no extra taps, so folding it into the
+// forward kernel is free -- and it removes the level-1 coefficient tensor from
+// memory entirely, along with the separate inverse pass and the base-conv add.
+//
+// Composed, the two transforms give a polyphase-structured full-resolution conv
+//     y[2h+qy, 2w+qx] = sum_{kh,kw} sum_{ry,rx} Omega[qy,qx][ry,rx][kh,kw]
+//                                             * x[2(h+kh-R)+ry, 2(w+kw-R)+rx]
+//     Omega[qy,qx][ry,rx][kh,kw] = sum_s H[s,qy,qx] * H[s,ry,rx] * w_s[kh,kw]
+// with H the 4x4 orthogonal Haar matrix. Materialising Omega would mean a
+// (2K)x(2K) kernel and 4x the multiply-accumulates; keeping the factored form
+// (partial sums -> K*K taps -> butterfly) costs exactly what the unfused conv
+// did.
+//
+// ll_add carries the reconstruction of levels 2..L (already at this level's
+// coefficient resolution) into the LL subband before the inverse, which is how
+// WTConv couples the levels.
+// -----------------------------------------------------------------------------
+template<typename T, int K>
+__global__ void fused_haar_conv_ihaar_kernel(
+    const T* __restrict__ input,         // (B, C, H, W), contiguous, even dims
+    const float* __restrict__ fused_w,   // (C, 4, K, K)
+    const T* __restrict__ ll_add,        // (B, C, H2, W2) or nullptr
+    const T* __restrict__ base_add,      // (B, C, Hout, Wout) or nullptr
+    T* __restrict__ output,              // (B, C, Hout, Wout)
+    int C, int H, int W, int H2, int W2, int Hout, int Wout,
+    int tiles_x, int tiles_y
+) {
+    constexpr int R = K / 2;
+    constexpr int SH = TILE_H + K - 1;
+    constexpr int SW = TILE_W + K - 1;
+    constexpr int SPLANE = SH * SW;
+    constexpr int WCOUNT = 4 * K * K;
+
+    __shared__ float sh_p[4][SPLANE];
+    __shared__ float sh_w[WCOUNT];
+
+    const int tiles_area = tiles_x * tiles_y;
+    const int bc = blockIdx.x / tiles_area;
+    const int tile = blockIdx.x - bc * tiles_area;
+    const int oh0 = (tile / tiles_x) * TILE_H;
+    const int ow0 = (tile % tiles_x) * TILE_W;
+    const int c = bc % C;
+
+    const int tid = threadIdx.y * TILE_W + threadIdx.x;
+
+    for (int i = tid; i < WCOUNT; i += TILE_THREADS) {
+        sh_w[i] = __ldg(&fused_w[c * WCOUNT + i]);
+    }
+
+    const T* in_bc = input + (size_t)bc * H * W;
+    for (int i = tid; i < SPLANE; i += TILE_THREADS) {
+        const int sy = i / SW;
+        const int sx = i - sy * SW;
+        const int ph = oh0 - R + sy;
+        const int pw = ow0 - R + sx;
+        float ll = 0.f, lh = 0.f, hl = 0.f, hh = 0.f;
+        if (ph >= 0 && ph < H2 && pw >= 0 && pw < W2) {
+            const int y0 = 2 * ph, x0 = 2 * pw;
+            const T* row0 = in_bc + (size_t)y0 * W + x0;
+            const T* row1 = row0 + W;
+            haar_step(to_float(__ldg(row0)), to_float(__ldg(row0 + 1)),
+                      to_float(__ldg(row1)), to_float(__ldg(row1 + 1)),
+                      ll, lh, hl, hh);
+        }
+        sh_p[0][i] = ll;
+        sh_p[1][i] = lh;
+        sh_p[2][i] = hl;
+        sh_p[3][i] = hh;
+    }
+    __syncthreads();
+
+    const int h2 = oh0 + threadIdx.y;
+    const int w2 = ow0 + threadIdx.x;
+    if (h2 >= H2 || w2 >= W2) return;
+
+    float acc0 = 0.f, acc1 = 0.f, acc2 = 0.f, acc3 = 0.f;
+    #pragma unroll
+    for (int kh = 0; kh < K; ++kh) {
+        const int srow = (threadIdx.y + kh) * SW + threadIdx.x;
+        const int wrow = kh * K;
+        #pragma unroll
+        for (int kw = 0; kw < K; ++kw) {
+            const int si = srow + kw;
+            const int wi = wrow + kw;
+            acc0 = fmaf(sh_w[0 * K * K + wi], sh_p[0][si], acc0);
+            acc1 = fmaf(sh_w[1 * K * K + wi], sh_p[1][si], acc1);
+            acc2 = fmaf(sh_w[2 * K * K + wi], sh_p[2][si], acc2);
+            acc3 = fmaf(sh_w[3 * K * K + wi], sh_p[3][si], acc3);
+        }
+    }
+
+    // Couple in the deeper levels, then invert -- both in registers.
+    if (ll_add != nullptr) {
+        acc0 += to_float(__ldg(&ll_add[(size_t)bc * H2 * W2 + (size_t)h2 * W2 + w2]));
+    }
+
+    float o00, o01, o10, o11;
+    ihaar_step(acc0, acc1, acc2, acc3, o00, o01, o10, o11);
+
+    const int y = 2 * h2, x = 2 * w2;
+    if (y >= Hout || x >= Wout) return;
+    const bool y_ok = (y + 1) < Hout;
+    const bool x_ok = (x + 1) < Wout;
+    const size_t off = (size_t)bc * Hout * Wout + (size_t)y * Wout + x;
+
+    if (base_add != nullptr) {
+        o00 += to_float(__ldg(&base_add[off]));
+        if (x_ok) o01 += to_float(__ldg(&base_add[off + 1]));
+        if (y_ok) o10 += to_float(__ldg(&base_add[off + Wout]));
+        if (y_ok && x_ok) o11 += to_float(__ldg(&base_add[off + Wout + 1]));
+    }
+
+    output[off] = from_float<T>(o00);
+    if (x_ok) output[off + 1] = from_float<T>(o01);
+    if (y_ok) output[off + Wout] = from_float<T>(o10);
+    if (y_ok && x_ok) output[off + Wout + 1] = from_float<T>(o11);
+}
+
+// -----------------------------------------------------------------------------
+// LL-only Haar downsample: (B, C, H, W) -> (B, C, H2, W2).
+//
+// Feeds the deeper levels when level 1 is fully fused. The fused level kernel
+// cannot both emit the raw LL and consume the deeper reconstruction in one pass
+// (level 2 depends on the former, the inverse on the latter), so the LL is
+// split out into this kernel: one read of the input, a quarter-sized write.
+// -----------------------------------------------------------------------------
+template<typename T>
+__global__ void haar_ll_kernel(
+    const T* __restrict__ input,
+    T* __restrict__ output,
+    int H, int W, int H2, int W2, long N
+) {
+    for (long idx = blockIdx.x * (long)blockDim.x + threadIdx.x; idx < N;
+         idx += (long)blockDim.x * gridDim.x) {
+        const int w2 = idx % W2;
+        long t = idx / W2;
+        const int h2 = t % H2;
+        const long bc = t / H2;
+
+        const int y0 = 2 * h2, x0 = 2 * w2;
+        const T* base = input + bc * H * W;
+        const float a = to_float(base[(long)y0 * W + x0]);
+        const float b = (x0 + 1 < W) ? to_float(base[(long)y0 * W + x0 + 1]) : 0.f;
+        const float c = (y0 + 1 < H) ? to_float(base[(long)(y0 + 1) * W + x0]) : 0.f;
+        const float d = (y0 + 1 < H && x0 + 1 < W)
+                        ? to_float(base[(long)(y0 + 1) * W + x0 + 1]) : 0.f;
+
+        output[idx] = from_float<T>(0.5f * (a + b + c + d));
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Backward w.r.t. the input.
 //
 // Same grid as the forward: one thread per output position, which owns exactly
@@ -384,6 +541,78 @@ void fused_haar_conv_backward(
         FUSED_DISPATCH_K(fused_haar_conv_scale_bwd_kernel, scalar_t,
                          haar_cptr<scalar_t>(grad_output), gllp, wptr,
                          haar_ptr<scalar_t>(grad_input), C, H, W, H2, W2, tiles_x, tiles_y);
+    });
+    AT_CUDA_CHECK(cudaGetLastError());
+}
+
+void fused_haar_conv_ihaar(
+    torch::Tensor input,                       // (B, C, H, W), even dims
+    torch::Tensor fused_weight,                // (C, 4, K, K) float32
+    torch::Tensor output,                      // (B, C, Hout, Wout)
+    c10::optional<torch::Tensor> ll_add,       // (B, C, H/2, W/2)
+    c10::optional<torch::Tensor> base_add      // (B, C, Hout, Wout)
+) {
+    TORCH_CHECK(input.dim() == 4, "input must be (B, C, H, W)");
+    TORCH_CHECK(output.dim() == 4 && output.is_contiguous(),
+                "output must be a contiguous (B, C, Hout, Wout) tensor");
+    const int B = input.size(0), C = input.size(1), H = input.size(2), W = input.size(3);
+    const int H2 = H / 2, W2 = W / 2;
+    const int Hout = output.size(2), Wout = output.size(3);
+    const int K = check_fused_shapes(input, fused_weight, C, H, W);
+    TORCH_CHECK(Hout <= H && Wout <= W, "output must fit inside the padded input");
+    TORCH_CHECK(output.size(0) == B && output.size(1) == C, "output must share B and C");
+
+    const int tiles_x = (W2 + TILE_W - 1) / TILE_W;
+    const int tiles_y = (H2 + TILE_H - 1) / TILE_H;
+    if (tiles_x == 0 || tiles_y == 0) return;
+
+    const long nblocks = (long)tiles_x * tiles_y * B * C;
+    TORCH_CHECK(nblocks <= 2147483647L, "grid too large: ", nblocks, " blocks");
+    dim3 block(TILE_W, TILE_H);
+    dim3 grid((unsigned)nblocks);
+    auto stream = at::cuda::getCurrentCUDAStream();
+    const float* wptr = fused_weight.data_ptr<float>();
+
+    HAAR_DISPATCH_DTYPE(input, "fused_haar_conv_ihaar", [&] {
+        const scalar_t* llp = nullptr;
+        if (ll_add.has_value()) {
+            TORCH_CHECK(ll_add->is_contiguous(), "ll_add must be contiguous");
+            TORCH_CHECK(ll_add->size(2) == H2 && ll_add->size(3) == W2,
+                        "ll_add must be (B, C, H/2, W/2)");
+            llp = haar_cptr<scalar_t>(*ll_add);
+        }
+        const scalar_t* basep = nullptr;
+        if (base_add.has_value()) {
+            TORCH_CHECK(base_add->is_contiguous() && base_add->sizes() == output.sizes(),
+                        "base_add must be contiguous and match the output shape");
+            basep = haar_cptr<scalar_t>(*base_add);
+        }
+        FUSED_DISPATCH_K(fused_haar_conv_ihaar_kernel, scalar_t,
+                         haar_cptr<scalar_t>(input), wptr, llp, basep,
+                         haar_ptr<scalar_t>(output),
+                         C, H, W, H2, W2, Hout, Wout, tiles_x, tiles_y);
+    });
+    AT_CUDA_CHECK(cudaGetLastError());
+}
+
+void haar_ll(torch::Tensor input, torch::Tensor output) {
+    TORCH_CHECK(input.dim() == 4 && output.dim() == 4, "tensors must be (B, C, H, W)");
+    TORCH_CHECK(input.is_cuda() && input.is_contiguous(), "input must be contiguous CUDA");
+    TORCH_CHECK(output.is_contiguous(), "output must be contiguous");
+    const int B = input.size(0), C = input.size(1), H = input.size(2), W = input.size(3);
+    const int H2 = output.size(2), W2 = output.size(3);
+    TORCH_CHECK(H2 == (H + 1) / 2 && W2 == (W + 1) / 2,
+                "output spatial dims must be ceil(H/2), ceil(W/2)");
+
+    const long N = (long)B * C * H2 * W2;
+    if (N == 0) return;
+    const int threads = 256;
+    const long blocks = std::min<long>((N + threads - 1) / threads, 65535L * 16);
+    auto stream = at::cuda::getCurrentCUDAStream();
+
+    HAAR_DISPATCH_DTYPE(input, "haar_ll", [&] {
+        haar_ll_kernel<scalar_t><<<blocks, threads, 0, stream>>>(
+            haar_cptr<scalar_t>(input), haar_ptr<scalar_t>(output), H, W, H2, W2, N);
     });
     AT_CUDA_CHECK(cudaGetLastError());
 }

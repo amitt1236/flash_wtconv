@@ -232,6 +232,185 @@ def fused_haar_conv_scale(
 
 
 # =============================================================================
+# Whole wavelet branch: every level plus the inverse cascade
+# =============================================================================
+
+def _pad_even(x: torch.Tensor) -> torch.Tensor:
+    """Zero pad odd spatial dims to even, as the reference does at each level."""
+    h, w = x.shape[2], x.shape[3]
+    if (h & 1) or (w & 1):
+        return F.pad(x, (0, w & 1, 0, h & 1))
+    return x
+
+
+def _haar_ll(x: torch.Tensor) -> torch.Tensor:
+    """LL subband only: (B, C, H, W) -> (B, C, ceil(H/2), ceil(W/2))."""
+    B, C, H, W = x.shape
+    out = torch.empty(B, C, (H + 1) // 2, (W + 1) // 2, device=x.device, dtype=x.dtype)
+    _get_module().haar_ll(x, out)
+    return out
+
+
+class WaveletBranchFunction(Function):
+    """
+    The complete WTConv wavelet branch as a single autograd node.
+
+    Level 1 runs as ONE kernel -- Haar, conv, scale, the deeper levels'
+    reconstruction, the inverse Haar and the base-conv addition all fused -- so
+    the full-resolution coefficient tensor is never materialised. The deeper
+    levels (a quarter of the work each) keep the coefficient-producing kernel,
+    since the cascade has to consume them.
+
+    Owning the whole branch is what makes that possible: level 2 needs level 1's
+    raw LL while level 1's inverse needs level 2's reconstruction, so the two
+    cannot be one kernel. Splitting them across separate autograd nodes would
+    force the raw-LL gradient into a separate full-resolution add; here it folds
+    into the same grad-input kernel it always did.
+    """
+
+    @staticmethod
+    def forward(ctx, x, base_out, kernel_size, num_levels, *params):
+        weights = params[:num_levels]
+        scales = params[num_levels:]
+        assert len(scales) == num_levels
+        assert x.is_cuda and x.dim() == 4, "input must be a 4D CUDA tensor"
+        K = kernel_size
+        assert K % 2 == 1, f"kernel_size must be odd, got {K}"
+
+        mod = _get_module()
+        B, C, H, W = x.shape
+        fused_ws = [compute_scaled_weight(w, s, K) for w, s in zip(weights, scales)]
+
+        # Per-level (padded) inputs, kept for the weight gradients
+        x0 = _pad_even(x.contiguous())
+        level_inputs = [x0]
+        H1, W1 = x0.shape[2] // 2, x0.shape[3] // 2
+
+        ll_add = None
+        if num_levels > 1:
+            current = _haar_ll(x0)
+            deeper = []
+            for i in range(1, num_levels):
+                padded = _pad_even(current)
+                level_inputs.append(padded)
+                h2, w2 = padded.shape[2] // 2, padded.shape[3] // 2
+                coeffs = torch.empty(B, C, 4, h2, w2, device=x.device, dtype=x.dtype)
+                ll_out = (torch.empty(B, C, h2, w2, device=x.device, dtype=x.dtype)
+                          if i < num_levels - 1 else None)
+                mod.fused_haar_conv_forward(padded, fused_ws[i], coeffs, ll_out)
+                deeper.append(coeffs)
+                current = ll_out
+
+            # Reconstruct levels 2..L onto level 1's coefficient grid
+            ll_add = torch.empty(B, C, H1, W1, device=x.device, dtype=x.dtype)
+            mod.ihaar_cascade(deeper, ll_add, None)
+
+        output = torch.empty(B, C, H, W, device=x.device, dtype=x.dtype)
+        mod.fused_haar_conv_ihaar(x0, fused_ws[0], output, ll_add, base_out)
+
+        ctx.save_for_backward(*level_inputs, *fused_ws, *weights, *scales)
+        ctx.num_levels = num_levels
+        ctx.kernel_size = K
+        ctx.input_shape = (H, W)
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        L = ctx.num_levels
+        K = ctx.kernel_size
+        H, W = ctx.input_shape
+        saved = ctx.saved_tensors
+        level_inputs = saved[:L]
+        fused_ws = saved[L:2 * L]
+        weights = saved[2 * L:3 * L]
+        scales = saved[3 * L:4 * L]
+
+        mod = _get_module()
+        grad_output = grad_output.contiguous()
+        B, C = grad_output.shape[:2]
+
+        needs = ctx.needs_input_grad
+        need_x, need_base = needs[0], needs[1]
+        need_w = [needs[4 + i] for i in range(L)]
+        need_s = [needs[4 + L + i] for i in range(L)]
+
+        # Adjoint of (crop . inverse Haar) at level 1: the forward Haar of the
+        # zero-padded output gradient.
+        x0 = level_inputs[0]
+        H1, W1 = x0.shape[2] // 2, x0.shape[3] // 2
+        g1 = torch.empty(B, C, 4, H1, W1, device=grad_output.device, dtype=grad_output.dtype)
+        mod.haar_coeffs(grad_output, g1)
+
+        # Deeper levels: the cascade's adjoint is the forward Haar cascade of the
+        # gradient that reached its output, i.e. level 1's LL gradient.
+        grad_levels = [g1]
+        if L > 1:
+            grad_levels += run_haar_cascade(g1[:, :, 0].contiguous(), L - 1)
+
+        # Walk levels L..2 backwards; each level's grad_input becomes the next
+        # (shallower) level's grad_ll. Only the input gradient needs this chain;
+        # the weight gradients read grad_levels directly.
+        grad_ll = None
+        for i in range(L - 1, 0, -1) if need_x else ():
+            grad_in = torch.empty_like(level_inputs[i])
+            mod.fused_haar_conv_backward(grad_levels[i], fused_ws[i], grad_in, grad_ll)
+            # Undo this level's even padding before handing it up
+            prev_ll_h, prev_ll_w = level_inputs[i - 1].shape[2] // 2, level_inputs[i - 1].shape[3] // 2
+            if grad_in.shape[2] != prev_ll_h or grad_in.shape[3] != prev_ll_w:
+                grad_in = grad_in[:, :, :prev_ll_h, :prev_ll_w].contiguous()
+            grad_ll = grad_in
+
+        grad_x = None
+        if need_x:
+            # grad_ll (the raw-LL path feeding level 2) folds into the same
+            # kernel as the level-1 coefficient gradients: no extra pass.
+            grad_x_pad = torch.empty_like(x0)
+            mod.fused_haar_conv_backward(g1, fused_ws[0], grad_x_pad, grad_ll)
+            grad_x = grad_x_pad
+            if grad_x.shape[2] != H or grad_x.shape[3] != W:
+                grad_x = grad_x[:, :, :H, :W].contiguous()
+
+        grad_weights, grad_scales = [None] * L, [None] * L
+        for i in range(L):
+            if need_w[i] or need_s[i]:
+                coeffs = _haar_coeffs(level_inputs[i])
+                gw, gs = _grad_weight_scale(coeffs, grad_levels[i], weights[i], scales[i], K)
+                grad_weights[i] = gw if need_w[i] else None
+                grad_scales[i] = gs if need_s[i] else None
+
+        grad_base = grad_output if need_base else None
+        return (grad_x, grad_base, None, None, *grad_weights, *grad_scales)
+
+
+def wavelet_branch(
+    x: torch.Tensor,
+    base_out: torch.Tensor,
+    weights: Sequence[torch.Tensor],
+    scales: Sequence[torch.Tensor],
+    kernel_size: int,
+) -> torch.Tensor:
+    """
+    Run WTConv's entire wavelet branch and add the base-conv output.
+
+    Args:
+        x: (B, C, H, W)
+        base_out: (B, C, H, W) scaled base convolution, folded into the final store
+        weights: per level, (C*4, 1, K, K)
+        scales: per level, (1, C*4, 1, 1)
+        kernel_size: K (odd, <= 9)
+
+    Returns:
+        (B, C, H, W)
+    """
+    num_levels = len(weights)
+    assert len(scales) == num_levels, "one scale per level"
+    assert 1 <= num_levels <= 5, "wt_levels must be 1-5"
+    return WaveletBranchFunction.apply(
+        x, base_out, kernel_size, num_levels, *weights, *scales
+    )
+
+
+# =============================================================================
 # Inverse Haar cascade (1-5 levels, optional fused add)
 # =============================================================================
 

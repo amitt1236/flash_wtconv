@@ -6,7 +6,11 @@ void fused_haar_conv_forward(torch::Tensor input, torch::Tensor fused_weight,
                              torch::Tensor output, c10::optional<torch::Tensor> ll_output);
 void fused_haar_conv_backward(torch::Tensor grad_output, torch::Tensor fused_weight,
                               torch::Tensor grad_input, c10::optional<torch::Tensor> grad_ll);
+void fused_haar_conv_ihaar(torch::Tensor input, torch::Tensor fused_weight,
+                           torch::Tensor output, c10::optional<torch::Tensor> ll_add,
+                           c10::optional<torch::Tensor> base_add);
 void haar_coeffs(torch::Tensor input, torch::Tensor output);
+void haar_ll(torch::Tensor input, torch::Tensor output);
 
 // Fused inverse Haar cascade with optional fused add (ihaar_cascade.cu)
 void ihaar_cascade(std::vector<torch::Tensor> levels, torch::Tensor output,
@@ -21,8 +25,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           "Fused Haar + depthwise conv + scale, grad w.r.t. input (CUDA)",
           py::arg("grad_output"), py::arg("fused_weight"), py::arg("grad_input"),
           py::arg("grad_ll") = py::none());
+    m.def("fused_haar_conv_ihaar", &fused_haar_conv_ihaar,
+          "Fully fused level: Haar + conv + scale + inverse Haar + adds (CUDA)",
+          py::arg("input"), py::arg("fused_weight"), py::arg("output"),
+          py::arg("ll_add") = py::none(), py::arg("base_add") = py::none());
     m.def("haar_coeffs", &haar_coeffs,
           "Single-level Haar coefficients, (B,C,H,W) -> (B,C,4,H2,W2) (CUDA)");
+    m.def("haar_ll", &haar_ll,
+          "LL-only Haar downsample, (B,C,H,W) -> (B,C,H2,W2) (CUDA)");
     m.def("ihaar_cascade", &ihaar_cascade,
           "Fused 1-5 level inverse Haar cascade with optional fused add (CUDA)",
           py::arg("levels"), py::arg("output"), py::arg("add") = py::none());

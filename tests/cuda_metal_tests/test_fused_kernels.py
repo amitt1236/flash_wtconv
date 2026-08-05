@@ -5,8 +5,10 @@ Each kernel is checked against the operation it replaces, built from the origina
 WTConv wavelet filters (WTConv/wtconv/util/wavelet.py):
 
     haar2d                  vs wavelet_2d_transform
+    _haar_ll                vs the LL subband of wavelet_2d_transform
     fused_haar_conv_scale   vs haar -> grouped conv2d -> scale
     run_ihaar_cascade       vs the reference bottom-up reconstruction loop
+    wavelet_branch          vs the whole reference wavelet branch
     gradients               vs autograd through those reference compositions
 
 TF32 is disabled: the reference paths are cuDNN convolutions, which would
@@ -121,6 +123,80 @@ def test_ihaar_cascade():
                   H.run_ihaar_cascade(levels, (h, w), add_tensor=add), want + add)
 
 
+def test_wavelet_branch():
+    """Whole branch (level 1 fully fused) vs haar -> conv -> cascade -> add."""
+    print("\n[fully fused wavelet branch]")
+    for L in [1, 2, 3, 5]:
+        for K in [3, 5]:
+            for (B, C, h, w) in [(2, 8, 64, 64), (2, 4, 33, 47)]:
+                torch.manual_seed(4)
+                x = torch.randn(B, C, h, w, device=DEV)
+                base = torch.randn(B, C, h, w, device=DEV)
+                ws = [torch.randn(C * 4, 1, K, K, device=DEV) * 0.2 for _ in range(L)]
+                ss = [torch.rand(1, C * 4, 1, 1, device=DEV) * 0.3 for _ in range(L)]
+
+                got = H.wavelet_branch(x, base, ws, ss, K)
+
+                # reference: per-level pad + haar + conv + scale, then reconstruct
+                levels, curr = [], x
+                for i in range(L):
+                    ch, cw = curr.shape[2], curr.shape[3]
+                    if (ch & 1) or (cw & 1):
+                        curr = F.pad(curr, (0, cw & 1, 0, ch & 1))
+                    levels.append(ref_fused(curr, ws[i], ss[i], K))
+                    curr = ref_haar(curr)[:, :, 0]
+                want = ref_cascade(levels, (h, w)) + base
+
+                check(f"branch L={L} K={K} {B}x{C}x{h}x{w}", got, want, 3e-5)
+
+
+def test_haar_ll():
+    print("\n[LL-only downsample]")
+    for (B, C, h, w) in [(2, 4, 32, 32), (1, 3, 33, 47), (2, 8, 64, 62)]:
+        x = torch.randn(B, C, h, w, device=DEV)
+        xp = F.pad(x, (0, w % 2, 0, h % 2))
+        check(f"haar_ll {B}x{C}x{h}x{w}", H._haar_ll(x), ref_haar(xp)[:, :, 0])
+
+
+def test_branch_grads():
+    print("\n[fully fused branch gradients]")
+    for L in [1, 2, 3]:
+        for (B, C, h, w) in [(2, 6, 32, 32), (2, 4, 31, 33)]:
+            torch.manual_seed(5)
+            K = 3
+            x = torch.randn(B, C, h, w, device=DEV, requires_grad=True)
+            base = torch.randn(B, C, h, w, device=DEV, requires_grad=True)
+            ws = [(torch.randn(C * 4, 1, K, K, device=DEV) * 0.2).requires_grad_()
+                  for _ in range(L)]
+            ss = [(torch.rand(1, C * 4, 1, 1, device=DEV) * 0.3).requires_grad_()
+                  for _ in range(L)]
+            g = torch.randn(B, C, h, w, device=DEV)
+
+            (H.wavelet_branch(x, base, ws, ss, K) * g).sum().backward()
+            got = [x.grad.clone(), base.grad.clone()] + \
+                  [p.grad.clone() for p in ws] + [p.grad.clone() for p in ss]
+
+            rx = x.detach().clone().requires_grad_()
+            rbase = base.detach().clone().requires_grad_()
+            rws = [p.detach().clone().requires_grad_() for p in ws]
+            rss = [p.detach().clone().requires_grad_() for p in ss]
+            levels, curr = [], rx
+            for i in range(L):
+                ch, cw = curr.shape[2], curr.shape[3]
+                if (ch & 1) or (cw & 1):
+                    curr = F.pad(curr, (0, cw & 1, 0, ch & 1))
+                levels.append(ref_fused(curr, rws[i], rss[i], K))
+                curr = ref_haar(curr)[:, :, 0]
+            ((ref_cascade(levels, (h, w)) + rbase) * g).sum().backward()
+            want = [rx.grad, rbase.grad] + [p.grad for p in rws] + [p.grad for p in rss]
+
+            names = ['grad_input', 'grad_base'] + \
+                    [f'grad_w{i + 1}' for i in range(L)] + \
+                    [f'grad_s{i + 1}' for i in range(L)]
+            for name, a, b in zip(names, got, want):
+                check(f"branch L={L} {h}x{w} {name}", a, b, 3e-4)
+
+
 def test_fused_grads():
     print("\n[fused Haar -> conv -> scale gradients]")
     for K in [3, 5]:
@@ -183,10 +259,13 @@ def main():
         return 1
     print(f"Fused Haar kernels vs WTConv reference ops on {torch.cuda.get_device_name(0)}")
     test_haar()
+    test_haar_ll()
     test_fused_forward()
     test_ihaar_cascade()
+    test_wavelet_branch()
     test_fused_grads()
     test_cascade_grads()
+    test_branch_grads()
     print(f"\n{'ALL PASS' if not _failures else str(len(_failures)) + ' FAILURES: ' + str(_failures)}")
     return 1 if _failures else 0
 

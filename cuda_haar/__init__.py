@@ -6,6 +6,8 @@ coefficients never touch memory. Mirrors the `triton_haar` API.
 """
 
 from .haar_cuda import (
+    # Whole wavelet branch (level 1 fully fused: Haar+conv+scale+inverse+add)
+    wavelet_branch,
     # Fused Haar -> conv -> scale
     fused_haar_conv_scale,
     compute_scaled_weight,
@@ -27,12 +29,14 @@ from .haar_cuda import (
     scaled_depthwise_conv,
     # Autograd functions / raw runners (advanced use)
     FusedHaarConvScaleFunction,
+    WaveletBranchFunction,
     IHaarCascadeFn,
     run_ihaar_cascade,
     run_haar_cascade,
 )
 
 __all__ = [
+    'wavelet_branch',
     'fused_haar_conv_scale',
     'compute_scaled_weight',
     'ihaar2d_fused',
@@ -48,6 +52,7 @@ __all__ = [
     'haar2d',
     'scaled_depthwise_conv',
     'FusedHaarConvScaleFunction',
+    'WaveletBranchFunction',
     'IHaarCascadeFn',
     'run_ihaar_cascade',
     'run_haar_cascade',

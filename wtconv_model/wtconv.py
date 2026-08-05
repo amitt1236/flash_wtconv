@@ -1,14 +1,15 @@
 """
 WTConv2d on fused CUDA kernels.
 
-The wavelet branch runs as two kernels per forward:
+The whole wavelet branch is one autograd node (cuda_haar.wavelet_branch):
 
-    fused_haar_conv_scale   Haar + depthwise conv + scale, per level, in one
-                            kernel -- the Haar transform is folded into the conv
-                            weights, so coefficients never reach memory. The raw
-                            LL subband for the next level comes out for free.
-    ihaar2d_*_fused         the whole 1-5 level inverse cascade plus the
-                            base-conv addition, in one kernel.
+    level 1        ONE kernel does Haar + depthwise conv + scale + the deeper
+                   levels' reconstruction + inverse Haar + the base-conv add.
+                   Both transforms are folded into the conv weights, so the
+                   full-resolution coefficient tensor never reaches memory.
+    levels 2..L    the coefficient-producing fused kernel (a quarter of the work
+                   each), reconstructed by the fused inverse cascade onto level
+                   1's coefficient grid.
 
 The base convolution keeps its own scaled depthwise conv (cuDNN, with the scale
 folded into weight and bias).
@@ -144,30 +145,11 @@ class WTConv2d(nn.Module):
             x, self.base_weight, self.base_scale, K // 2, bias=self.base_bias
         )
 
-        # Decomposition: one fused Haar+conv+scale kernel per level. Odd sizes
-        # are zero padded per level, as the reference does.
-        current = x
-        level_outputs = []
-        for i in range(self.wt_levels):
-            h, w = current.shape[2], current.shape[3]
-            if (h & 1) or (w & 1):
-                current = F.pad(current, (0, w & 1, 0, h & 1))
-
-            if i < self.wt_levels - 1:
-                out, current = haar.fused_haar_conv_scale(
-                    current, self.wt_weights[i], self.wt_scales[i], K, return_ll=True
-                )
-            else:
-                out = haar.fused_haar_conv_scale(
-                    current, self.wt_weights[i], self.wt_scales[i], K, return_ll=False
-                )
-            level_outputs.append(out)
-
-        # Reconstruction: whole cascade + the base-conv add in one kernel
-        fused_inverse = [haar.ihaar2d_fused, haar.ihaar2d_double_fused,
-                         haar.ihaar2d_triple_fused, haar.ihaar2d_quad_fused,
-                         haar.ihaar2d_quint_fused][self.wt_levels - 1]
-        output = fused_inverse(*level_outputs, base_out, (H, W))
+        # Wavelet branch: all levels, the inverse cascade and the base add.
+        # Odd sizes are zero padded per level, as the reference does.
+        output = haar.wavelet_branch(
+            x, base_out, list(self.wt_weights), list(self.wt_scales), K
+        )
 
         if self.do_stride is not None:
             output = self.do_stride(output)
