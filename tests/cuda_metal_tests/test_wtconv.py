@@ -65,15 +65,19 @@ def sync_device(device: str):
 
 
 def copy_weights_to_naive(model, naive, depth):
-    """Copy weights from WTConv model to naive model."""
+    """Copy weights from WTConv model to naive model.
+
+    The fused model keeps plain parameter tensors (base_weight / wt_weights),
+    since the scale is folded into them before every convolution.
+    """
     with torch.no_grad():
-        naive.base_conv.weight.copy_(model.base_conv.weight)
-        if model.base_conv.bias is not None and naive.base_conv.bias is not None:
-            naive.base_conv.bias.copy_(model.base_conv.bias)
+        naive.base_conv.weight.copy_(model.base_weight)
+        if model.base_bias is not None and naive.base_conv.bias is not None:
+            naive.base_conv.bias.copy_(model.base_bias)
         naive.base_scale.weight.copy_(model.base_scale)
         for level in range(depth):
-            naive.wavelet_convs[level].weight.copy_(model.wavelet_convs[level].weight)
-            naive.wavelet_scale[level].weight.copy_(model.wavelet_scales[level])
+            naive.wavelet_convs[level].weight.copy_(model.wt_weights[level])
+            naive.wavelet_scale[level].weight.copy_(model.wt_scales[level])
 
 
 def test_correctness(device: str, dtype=torch.float32):

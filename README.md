@@ -6,25 +6,47 @@ A high-performance CUDA/Triton/Metal implementation of the Wavelet Convolution (
 
 Flash WTConv optimizes the original WTConv implementation through:
 
+- **Weight fusion with Haar**: each depthwise-conv tap reads exactly one Haar coefficient, which comes from exactly one 2x2 input block. So the transform is folded into the conv weights and the wavelet coefficients are never written to memory — one kernel per level does Haar + conv + scale.
 - **Haar Transform Optimization**: Replaces convolution-based Haar filters with efficient addition/subtraction operations
-- **Cascade Transform**: Fuses multi-level wavelet transforms to increase arithmetic intensity
+- **Cascade Transform**: the entire multi-level inverse transform runs in registers in one kernel, with the base-conv addition fused into its final store
 - **Smart Scaling**: Bakes channel-wise scaling into convolution weights for zero overhead
 - **Multi-precision Support**: FP32, FP16, and BF16
 
+The wavelet branch of a forward pass is therefore `wt_levels + 1` kernels instead of a Haar / conv / scale / inverse / add chain per level.
+
+### Fused wavelet level
+
+For output position `(h2, w2)` and tap `(kh, kw)` with `R = K//2`:
+
+```
+                    load x[2*(h2+kh-R) .. +1, 2*(w2+kw-R) .. +1]   (one 2x2 block)
+partial sums        S  = (a+b+c+d)/2   Dh = (a+b-c-d)/2
+                    Dv = (a-b+c-d)/2   Dd = (a-b-c+d)/2
+accumulate          out[LL] += w[c,0,kh,kw] * S     out[LH] += w[c,1,kh,kw] * Dh
+                    out[HL] += w[c,2,kh,kw] * Dv    out[HH] += w[c,3,kh,kw] * Dd
+```
+
+`w` is `scale * weight`, folded on the host into a `(C, 4, K, K)` fp32 tensor — 4x less weight traffic than the `(C, 4, 2K, 2K)` "effective kernel" a naive fusion would build. Each CUDA block stages its output tile's partial sums (plus a `K-1` halo) in shared memory, so every input pixel is read from HBM exactly once. The raw LL subband that feeds the next level is the centre tap's partial sum, so it costs nothing extra.
+
 ## Performance
 
-Compared to the naive WTConv implementation:
+Measured on an RTX A6000, fp32, K=3, forward+backward against the original implementation (`tests/cuda_metal_tests/test_wtconv.py`):
 
-| Platform | Speedup |
-|----------|---------|
-| CUDA (FP32) | ~2.9x |
-| CUDA (FP16) | ~3.8x |
-| Metal (M3) | ~2.3x |
-| Triton | +10% over hand-written CUDA |
+| wt_levels | 16x32x256x256 | 16x32x512x512 |
+|-----------|---------------|---------------|
+| 1 | 3.0x | 2.9x |
+| 2 | 3.8x | 3.5x |
+| 3 | 4.0x | 6.0x |
+| 4 | 3.9x | 3.7x |
+| 5 | 3.9x | 3.8x |
+
+Activation memory for the wavelet branch drops ~2.7x, since no coefficient tensor is ever materialised.
+
+`tests/cuda_metal_tests/test_wtconv_correctness.py` validates the layer against the original implementation (forward and all gradients, levels 1-5, K = 1..9, odd sizes, fp32/fp16/bf16).
 
 ## Implementations
 
-- **CUDA**: Custom kernels with fused Haar transform and inverse
+- **CUDA**: fused Haar-conv-scale kernel + fused inverse cascade with fused add
 - **Triton**: Fused Haar-Conv-Scale kernel with auto-tuning
 - **Metal**: Apple Silicon support via custom Metal shaders
 - **JAX**: XLA-compiled implementation for TPU compatibility
@@ -110,9 +132,21 @@ y = model(x)
 ```
 ├── wtconv_model/      # Flash WTConv implementations
 ├── cuda_haar/         # CUDA kernels
+│   ├── fused_haar_conv.cu   # fused Haar+conv+scale (fwd/bwd) + Haar coefficients
+│   ├── ihaar_cascade.cu     # 1-5 level inverse cascade with optional fused add
+│   ├── haar_common.cuh      # dtype helpers, Haar / inverse-Haar primitives
+│   └── haar_cuda.py         # autograd wrappers and public API
 ├── metal_haar/        # Metal shaders
 ├── tpu_haar/          # TPU ops
 ├── triton_haar/       # Triton kernels
 ├── tests/             # Test suites
 └── WTConv/            # Naive reference implementation
+```
+
+## Tests
+
+```bash
+python tests/cuda_metal_tests/test_fused_kernels.py       # kernel-level vs reference ops
+python tests/cuda_metal_tests/test_wtconv_correctness.py  # layer-level, fwd + all grads
+python tests/cuda_metal_tests/test_wtconv.py              # correctness + benchmark vs original
 ```
