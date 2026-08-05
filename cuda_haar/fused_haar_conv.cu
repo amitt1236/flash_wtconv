@@ -388,6 +388,114 @@ __global__ void fused_haar_conv_scale_bwd_kernel(
 }
 
 // -----------------------------------------------------------------------------
+// Weight gradient, straight from the level input.
+//
+//   dL/dw_fused[c,s,kh,kw] = sum_{b,h2,w2} grad_out[b,c,s,h2,w2]
+//                                        * P_s(h2 + kh - R, w2 + kw - R)
+//
+// which is the forward's tap loop with the roles of "sum over taps" and "sum
+// over positions" swapped. Computing P_s on the fly means the coefficients are
+// never materialised here either, so this reads the input and the output
+// gradient once each -- against cuDNN's grouped depthwise weight gradient,
+// which was the single most expensive kernel in a training step.
+//
+// Layout: threadIdx.z picks the subband, so a thread only carries K*K
+// accumulators in registers (not 4*K*K) and loads one gradient value per
+// position; all four subbands share the staged partial-sum tile. Each warp
+// reduces its accumulators with shuffles and atomically adds the result, so a
+// block's whole spatial chunk costs K*K atomics per warp.
+//
+// The atomics make this non-deterministic across runs at fp32 rounding level,
+// as cuDNN's own weight gradient is.
+// -----------------------------------------------------------------------------
+template<typename T, int K>
+__global__ __launch_bounds__(TILE_W * TILE_H * 4) void fused_haar_grad_weight_kernel(
+    const T* __restrict__ input,         // (B, C, H, W), contiguous, even dims
+    const T* __restrict__ grad_output,   // (B, C, 4, H2, W2), contiguous
+    float* __restrict__ grad_fused_w,    // (C, 4, K, K) fp32, pre-zeroed
+    int B, int C, int H, int W, int H2, int W2,
+    int tiles_x, int tiles_area
+) {
+    constexpr int R = K / 2;
+    constexpr int SH = TILE_H + K - 1;
+    constexpr int SW = TILE_W + K - 1;
+    constexpr int SPLANE = SH * SW;
+    constexpr int NTHREADS = TILE_W * TILE_H * 4;
+
+    __shared__ float sh_p[4][SPLANE];
+
+    float acc[K * K];
+    #pragma unroll
+    for (int i = 0; i < K * K; ++i) acc[i] = 0.f;
+
+    const int c = blockIdx.y;
+    const int s = threadIdx.z;
+    const int tid = (threadIdx.z * TILE_H + threadIdx.y) * TILE_W + threadIdx.x;
+    const int plane = H2 * W2;
+    const long tiles_total = (long)tiles_area * B;
+
+    for (long tt = blockIdx.x; tt < tiles_total; tt += gridDim.x) {
+        const int b = (int)(tt / tiles_area);
+        const int tile = (int)(tt - (long)b * tiles_area);
+        const int oh0 = (tile / tiles_x) * TILE_H;
+        const int ow0 = (tile % tiles_x) * TILE_W;
+        const long bc = (long)b * C + c;
+
+        __syncthreads();   // previous iteration's reads must be done
+        const T* in_bc = input + (size_t)bc * H * W;
+        for (int i = tid; i < SPLANE; i += NTHREADS) {
+            const int sy = i / SW;
+            const int sx = i - sy * SW;
+            const int ph = oh0 - R + sy;
+            const int pw = ow0 - R + sx;
+            float ll = 0.f, lh = 0.f, hl = 0.f, hh = 0.f;
+            if (ph >= 0 && ph < H2 && pw >= 0 && pw < W2) {
+                const int y0 = 2 * ph, x0 = 2 * pw;
+                const T* row0 = in_bc + (size_t)y0 * W + x0;
+                const T* row1 = row0 + W;
+                haar_step(to_float(__ldg(row0)), to_float(__ldg(row0 + 1)),
+                          to_float(__ldg(row1)), to_float(__ldg(row1 + 1)),
+                          ll, lh, hl, hh);
+            }
+            sh_p[0][i] = ll;
+            sh_p[1][i] = lh;
+            sh_p[2][i] = hl;
+            sh_p[3][i] = hh;
+        }
+        __syncthreads();
+
+        const int h2 = oh0 + threadIdx.y;
+        const int w2 = ow0 + threadIdx.x;
+        float g = 0.f;   // out-of-range positions contribute nothing
+        if (h2 < H2 && w2 < W2) {
+            g = to_float(__ldg(&grad_output[(size_t)bc * 4 * plane + (size_t)s * plane
+                                            + (size_t)h2 * W2 + w2]));
+        }
+
+        #pragma unroll
+        for (int kh = 0; kh < K; ++kh) {
+            const int srow = (threadIdx.y + kh) * SW + threadIdx.x;
+            #pragma unroll
+            for (int kw = 0; kw < K; ++kw) {
+                acc[kh * K + kw] = fmaf(g, sh_p[s][srow + kw], acc[kh * K + kw]);
+            }
+        }
+    }
+
+    // Warp-reduce each tap and accumulate into the (tiny) global buffer.
+    float* out = grad_fused_w + ((size_t)c * 4 + s) * K * K;
+    #pragma unroll
+    for (int i = 0; i < K * K; ++i) {
+        float v = acc[i];
+        #pragma unroll
+        for (int off = 16; off > 0; off >>= 1) {
+            v += __shfl_down_sync(0xffffffffu, v, off);
+        }
+        if (threadIdx.x == 0) atomicAdd(out + i, v);
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Plain Haar coefficients: (B, C, H, W) -> (B, C, 4, H2, W2).
 //
 // Used for the weight gradient (which needs the coefficients the conv actually
@@ -591,6 +699,64 @@ void fused_haar_conv_ihaar(
                          haar_cptr<scalar_t>(input), wptr, llp, basep,
                          haar_ptr<scalar_t>(output),
                          C, H, W, H2, W2, Hout, Wout, tiles_x, tiles_y);
+    });
+    AT_CUDA_CHECK(cudaGetLastError());
+}
+
+// Register pressure caps the fused weight gradient: a thread holds K*K
+// accumulators, so beyond K=5 it would spill. Callers fall back to the
+// coefficient + cuDNN path there (see haar_cuda._grad_weight_scale).
+int fused_haar_grad_weight_max_k() { return 5; }
+
+void fused_haar_grad_weight(
+    torch::Tensor input,                       // (B, C, H, W), even dims
+    torch::Tensor grad_output,                 // (B, C, 4, H2, W2)
+    torch::Tensor grad_fused_weight            // (C, 4, K, K) float32, zeroed
+) {
+    TORCH_CHECK(input.dim() == 4, "input must be (B, C, H, W)");
+    TORCH_CHECK(grad_output.dim() == 5 && grad_output.is_contiguous(),
+                "grad_output must be a contiguous (B, C, 4, H2, W2) tensor");
+    const int B = input.size(0), C = input.size(1), H = input.size(2), W = input.size(3);
+    const int H2 = H / 2, W2 = W / 2;
+    const int K = check_fused_shapes(input, grad_fused_weight, C, H, W);
+    TORCH_CHECK(K <= fused_haar_grad_weight_max_k(),
+                "fused weight gradient supports K <= ", fused_haar_grad_weight_max_k(),
+                ", got ", K);
+    TORCH_CHECK(grad_output.size(3) == H2 && grad_output.size(4) == W2,
+                "grad_output spatial dims must be H/2, W/2");
+    TORCH_CHECK(input.scalar_type() == grad_output.scalar_type(),
+                "input and grad_output must share dtype");
+
+    const int tiles_x = (W2 + TILE_W - 1) / TILE_W;
+    const int tiles_y = (H2 + TILE_H - 1) / TILE_H;
+    const int tiles_area = tiles_x * tiles_y;
+    if (tiles_area == 0 || B == 0) return;
+
+    // Aim for a couple of blocks per SM; each block then sweeps a long run of
+    // tiles, so the reduction epilogue stays amortised.
+    const int sms = at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
+    const long tiles_total = (long)tiles_area * B;
+    long bpc = (2L * sms + C - 1) / C;
+    bpc = std::max(1L, std::min(bpc, tiles_total));
+
+    dim3 block(TILE_W, TILE_H, 4);
+    dim3 grid((unsigned)bpc, (unsigned)C);
+    auto stream = at::cuda::getCurrentCUDAStream();
+    float* gwptr = grad_fused_weight.data_ptr<float>();
+
+    HAAR_DISPATCH_DTYPE(input, "fused_haar_grad_weight", [&] {
+        switch (K) {
+            case 1: fused_haar_grad_weight_kernel<scalar_t, 1><<<grid, block, 0, stream>>>(
+                        haar_cptr<scalar_t>(input), haar_cptr<scalar_t>(grad_output),
+                        gwptr, B, C, H, W, H2, W2, tiles_x, tiles_area); break;
+            case 3: fused_haar_grad_weight_kernel<scalar_t, 3><<<grid, block, 0, stream>>>(
+                        haar_cptr<scalar_t>(input), haar_cptr<scalar_t>(grad_output),
+                        gwptr, B, C, H, W, H2, W2, tiles_x, tiles_area); break;
+            case 5: fused_haar_grad_weight_kernel<scalar_t, 5><<<grid, block, 0, stream>>>(
+                        haar_cptr<scalar_t>(input), haar_cptr<scalar_t>(grad_output),
+                        gwptr, B, C, H, W, H2, W2, tiles_x, tiles_area); break;
+            default: TORCH_CHECK(false, "unsupported kernel size ", K);
+        }
     });
     AT_CUDA_CHECK(cudaGetLastError());
 }

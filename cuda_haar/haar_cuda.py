@@ -64,6 +64,7 @@ def _get_module():
                 str(src_dir / 'haar.cpp'),
                 str(src_dir / 'fused_haar_conv.cu'),
                 str(src_dir / 'ihaar_cascade.cu'),
+                str(src_dir / 'depthwise_grad.cu'),
             ],
             extra_cuda_cflags=['-O3', '--use_fast_math'],
             verbose=False,
@@ -109,10 +110,10 @@ def _haar_coeffs(x: torch.Tensor) -> torch.Tensor:
 
 
 def _grad_weight_scale(
-    coeffs: torch.Tensor,      # (B, C, 4, H2, W2) Haar coefficients the conv saw
+    level_input: torch.Tensor,  # (B, C, H, W) the (padded) input of this level
     grad_output: torch.Tensor,  # (B, C, 4, H2, W2)
-    weight: torch.Tensor,      # (C*4, 1, K, K)
-    scale: torch.Tensor,       # (1, C*4, 1, 1)
+    weight: torch.Tensor,       # (C*4, 1, K, K)
+    scale: torch.Tensor,        # (1, C*4, 1, 1)
     kernel_size: int,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
@@ -120,18 +121,29 @@ def _grad_weight_scale(
 
     The forward convolves with w~ = scale * weight, so the chain rule gives
         dL/dweight = scale * dL/dw~        dL/dscale = sum(weight * dL/dw~).
-    dL/dw~ itself is an ordinary grouped conv weight gradient (cuDNN).
+
+    dL/dw~ comes from a kernel that reduces grad_output against the Haar partial
+    sums computed on the fly, so the coefficients are never materialised. Above
+    the kernel's register budget (K > 5) it falls back to materialising them and
+    calling cuDNN's grouped weight gradient.
     """
-    B, C, _, H2, W2 = coeffs.shape
+    K = kernel_size
+    B, C = level_input.shape[0], level_input.shape[1]
     C4 = C * 4
-    padding = kernel_size // 2
+    mod = _get_module()
 
-    coeffs_flat = coeffs.reshape(B, C4, H2, W2).to(weight.dtype)
-    grad_flat = grad_output.reshape(B, C4, H2, W2).to(weight.dtype)
-
-    grad_fused = torch.nn.grad.conv2d_weight(
-        coeffs_flat, weight.shape, grad_flat, padding=padding, groups=C4
-    )
+    if K <= mod.fused_haar_grad_weight_max_k():
+        grad_fused = torch.zeros(C, 4, K, K, device=level_input.device,
+                                 dtype=torch.float32)
+        mod.fused_haar_grad_weight(level_input, grad_output.contiguous(), grad_fused)
+        grad_fused = grad_fused.reshape(C4, 1, K, K).to(weight.dtype)
+    else:
+        H2, W2 = grad_output.shape[3], grad_output.shape[4]
+        coeffs = _haar_coeffs(level_input).reshape(B, C4, H2, W2).to(weight.dtype)
+        grad_flat = grad_output.reshape(B, C4, H2, W2).to(weight.dtype)
+        grad_fused = torch.nn.grad.conv2d_weight(
+            coeffs, weight.shape, grad_flat, padding=K // 2, groups=C4
+        )
 
     grad_weight = grad_fused * scale.reshape(C4, 1, 1, 1)
     grad_scale = (grad_fused * weight).sum(dim=(1, 2, 3)).reshape_as(scale)
@@ -194,9 +206,8 @@ class FusedHaarConvScaleFunction(Function):
             )
 
         if need_w or need_s:
-            coeffs = _haar_coeffs(x)
             grad_weight, grad_scale = _grad_weight_scale(
-                coeffs, grad_output, weight, scale, K
+                x, grad_output, weight, scale, K
             )
             if not need_w:
                 grad_weight = None
@@ -373,8 +384,8 @@ class WaveletBranchFunction(Function):
         grad_weights, grad_scales = [None] * L, [None] * L
         for i in range(L):
             if need_w[i] or need_s[i]:
-                coeffs = _haar_coeffs(level_inputs[i])
-                gw, gs = _grad_weight_scale(coeffs, grad_levels[i], weights[i], scales[i], K)
+                gw, gs = _grad_weight_scale(
+                    level_inputs[i], grad_levels[i], weights[i], scales[i], K)
                 grad_weights[i] = gw if need_w[i] else None
                 grad_scales[i] = gs if need_s[i] else None
 
@@ -561,6 +572,34 @@ def haar2d(x: torch.Tensor) -> torch.Tensor:
 # Scaled depthwise conv (base-conv path): scale folded into weight and bias
 # =============================================================================
 
+def _depthwise_grad_weight(input, grad_output, weight, padding, groups):
+    """
+    Weight gradient of a depthwise conv, via a dedicated kernel when the layer
+    is the shape WTConv's base conv always is (depthwise, stride 1, 'same'
+    padding, odd K); otherwise cuDNN.
+    """
+    C, K = weight.shape[0], weight.shape[2]
+    mod = _get_module()
+    usable = (
+        groups == C
+        and weight.shape[1] == 1
+        and weight.shape[3] == K
+        and K % 2 == 1
+        and K <= mod.depthwise_grad_weight_max_k()
+        and padding == K // 2
+        and input.is_contiguous()
+        and input.shape[2:] == grad_output.shape[2:]
+    )
+    if not usable:
+        return torch.nn.grad.conv2d_weight(
+            input, weight.shape, grad_output, padding=padding, groups=groups
+        )
+
+    grad_w = torch.zeros(C, K, K, device=input.device, dtype=torch.float32)
+    mod.depthwise_grad_weight(input, grad_output.contiguous(), grad_w)
+    return grad_w.reshape(C, 1, K, K).to(weight.dtype)
+
+
 class ScaledDepthwiseConvFunction(Function):
     """
     y = scale * conv2d(x, weight, bias), computed as conv2d(x, scale*weight,
@@ -590,8 +629,8 @@ class ScaledDepthwiseConvFunction(Function):
         grad_input = torch.nn.grad.conv2d_input(
             input.shape, fused_weight, grad_output, padding=padding, groups=groups
         )
-        grad_fused_weight = torch.nn.grad.conv2d_weight(
-            input, weight.shape, grad_output, padding=padding, groups=groups
+        grad_fused_weight = _depthwise_grad_weight(
+            input, grad_output, weight, padding, groups
         )
 
         # Unfuse. The forward folds the scale into the weight, W~ = s * W, so the

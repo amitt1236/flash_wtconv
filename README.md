@@ -9,7 +9,9 @@ Flash WTConv optimizes the original WTConv implementation through:
 - **Weight fusion with Haar**: each depthwise-conv tap reads exactly one Haar coefficient, which comes from exactly one 2x2 input block. So the transform is folded into the conv weights and the wavelet coefficients are never written to memory.
 - **Both transforms fused**: at level 1 the inverse Haar, the deeper levels' reconstruction and the base-conv addition fold into the same kernel, so the full-resolution coefficient tensor never exists.
 - **Cascade Transform**: the multi-level inverse runs in registers in one kernel
+- **Fused weight gradient**: the weight gradient reduces the output gradient against Haar partial sums recomputed on the fly, replacing cuDNN's grouped depthwise weight gradient (K <= 5; larger kernels fall back to cuDNN)
 - **Smart Scaling**: Bakes channel-wise scaling into convolution weights for zero overhead
+- **Weight gradients**: dedicated reduction kernels replace cuDNN's slow grouped depthwise weight gradient
 - **Multi-precision Support**: FP32, FP16, and BF16
 
 ### Fused wavelet level
@@ -45,11 +47,11 @@ Measured on an RTX A6000, fp32, K=3, forward+backward against the original imple
 
 | wt_levels | 16x32x256x256 | 16x32x512x512 |
 |-----------|---------------|---------------|
-| 1 | 3.2x | 3.1x |
-| 2 | 3.8x | 3.4x |
-| 3 | 3.9x | 3.6x |
-| 4 | 3.9x | 3.6x |
-| 5 | 3.9x | 3.6x |
+| 1 | 3.4x | 3.6x |
+| 2 | 4.1x | 3.9x |
+| 3 | 4.2x | 4.1x |
+| 4 | 4.2x | 4.2x |
+| 5 | 4.2x | 4.2x |
 
 Activation memory drops ~2.7x against the original, since no coefficient tensor is ever materialised.
 
@@ -60,7 +62,20 @@ Fusing the inverse into level 1 (K=5, wavelet branch only, against the same kern
 | 1 | 1.88x | 1.10x |
 | 2-5 | 1.19x | 1.02x |
 
-Level 1 saves the full-resolution coefficient round trip outright. Deeper levels pay one extra read of the input for the LL-only downsample that feeds them, so the win is smaller. Backward is unchanged by design — it is dominated by cuDNN's depthwise weight gradient (~55% of a training step), which is the next thing worth replacing.
+Level 1 saves the full-resolution coefficient round trip outright. Deeper levels pay one extra read of the input for the LL-only downsample that feeds them, so the win is smaller.
+
+Fused weight gradient vs the cuDNN grouped weight gradient it replaces (K=5, whole layer forward+backward):
+
+| shape | wt_levels 1 | 3 | 5 |
+|-------|-------------|---|---|
+| 16x32x256x256 | 1.24x | 1.27x | 1.27x |
+| 16x32x512x512 | 1.26x | 1.28x | 1.25x |
+| 8x96x128x128 | 1.21x | 1.22x | 1.22x |
+| 4x384x64x64 | 1.17x | 1.17x | 1.17x |
+
+The kernel itself is 6.4x faster than cuDNN's (28.7 ms -> 4.5 ms at 16x32x512x512), and it also removes the coefficient tensor the cuDNN path had to materialise. The layer-level win is smaller because the *base* convolution's own cuDNN weight gradient (15.9 ms) is now the largest kernel in a training step — a plain depthwise gradient, unrelated to the wavelet branch, and the obvious next target.
+
+Gradient accumulation uses fp32 atomics, so the weight gradient is not bitwise reproducible run to run (neither is cuDNN's depthwise path).
 
 `tests/cuda_metal_tests/test_wtconv_correctness.py` validates the layer against the original implementation (forward and all gradients, levels 1-5, K = 1..9, odd sizes, fp32/fp16/bf16).
 
@@ -154,6 +169,7 @@ y = model(x)
 ├── cuda_haar/         # CUDA kernels
 │   ├── fused_haar_conv.cu   # fused Haar+conv+scale (+inverse) fwd/bwd, LL downsample
 │   ├── ihaar_cascade.cu     # 1-5 level inverse cascade with optional fused add
+│   ├── depthwise_grad.cu    # base-conv weight gradient
 │   ├── haar_common.cuh      # dtype helpers, Haar / inverse-Haar primitives
 │   └── haar_cuda.py         # autograd wrappers and public API
 ├── metal_haar/        # Metal shaders
