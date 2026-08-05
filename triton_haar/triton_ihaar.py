@@ -320,10 +320,10 @@ def run_ihaar_cascade(levels_list, output_size=None, add_tensor=None):
 
 # Import forward Haar kernel for backward pass
 try:
-    from triton_haar.triton_haar import _compute_haar_coeffs_kernel
+    from fast_wtconv.triton_haar.triton_haar import _compute_haar_coeffs_kernel
 except ImportError:
     # Fallback for local testing
-    from triton_haar import _compute_haar_coeffs_kernel
+    from .triton_haar import _compute_haar_coeffs_kernel
 
 def run_haar_cascade(x, num_levels):
     """

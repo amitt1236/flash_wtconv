@@ -133,9 +133,10 @@ class WTConv2d(nn.Module):
             output_wt = haar.ihaar2d_quint(level1_conv, level2_conv, level3_conv, level4_conv, level5_conv, (H, W))
         
         # Base conv
-        base_out = haar.scaled_depthwise_conv(x[:, :, :H, :W], self.base_conv.weight, self.base_scale, padding)
-        if self.base_conv.bias is not None:
-            base_out = base_out + self.base_conv.bias.view(1, -1, 1, 1)
+        base_out = haar.scaled_depthwise_conv(
+            x[:, :, :H, :W], self.base_conv.weight, self.base_scale, padding,
+            bias=self.base_conv.bias,
+        )
         
         output = base_out + output_wt
         
