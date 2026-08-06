@@ -1,0 +1,21 @@
+% Convergence panels, cropped from the Weights & Biases export of the
+% CIFAR-10 / WTMobileNet run (figures/wandb.pdf).
+% Card bounding boxes measured at 72 dpi (1 px = 1 pt) on the 595x842 pages:
+%   p1 validation accuracy : x 124..470, y 366..668
+%   p2 throughput ratio    : x 124..470, y  37..375
+%   p2 training loss       : x 124..470, y 378..677
+% trim = {left, bottom, right, top} removed, in pt.
+\begin{tikzpicture}[node distance=2mm]
+  \node (a)
+    {\includegraphics[height=4.1cm, page=1,
+       trim=124pt 174pt 125pt 366pt, clip]{figures/wandb.pdf}};
+  \node[right=of a] (b)
+    {\includegraphics[height=4.1cm, page=2,
+       trim=124pt 165pt 125pt 378pt, clip]{figures/wandb.pdf}};
+  \node[right=of b] (c)
+    {\includegraphics[height=4.1cm, page=2,
+       trim=124pt 467pt 125pt 37pt, clip]{figures/wandb.pdf}};
+  \node[below=0.8mm of a, font=\scriptsize] {(a) validation accuracy};
+  \node[below=0.8mm of b, font=\scriptsize] {(b) training loss};
+  \node[below=0.8mm of c, font=\scriptsize] {(c) throughput ratio};
+\end{tikzpicture}

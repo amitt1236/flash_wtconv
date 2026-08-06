@@ -1,0 +1,61 @@
+% Roofline for the RTX A6000. Hand-placed log-log coordinates so the figure has
+% no pgfplots dependency.
+%   X(I) = 2.6*(log10(I)+1)      I in FLOP/byte,  domain 1e-1 .. 1e3
+%   Y(P) = 1.7*(log10(P)-2)      P in GFLOP/s,    domain 1e2  .. 1e5
+% beta = 768 GB/s, pi = 38.7 TFLOP/s, ridge I* = 50.4 FLOP/byte.
+\begin{tikzpicture}[font=\small]
+
+% ---------------------------------------------------------------- axes
+\draw[->, black!70] (0,0) -- (10.9,0);
+\node[font=\small] at (5.2,-0.85) {arithmetic intensity $I$ (FLOP/byte)};
+\draw[->, black!70] (0,0) -- (0,5.45);
+\node[rotate=90, anchor=south, font=\small] at (-1.05,2.6)
+  {attainable (GFLOP/s)};
+
+\foreach \x/\lab in {0/$10^{-1}$, 2.6/$10^{0}$, 5.2/$10^{1}$, 7.8/$10^{2}$, 10.4/$10^{3}$} {
+  \draw[black!70] (\x,0) -- (\x,-0.09);
+  \node[below, font=\scriptsize] at (\x,-0.12) {\lab};
+}
+\foreach \y/\lab in {0/$10^{2}$, 1.7/$10^{3}$, 3.4/$10^{4}$, 5.1/$10^{5}$} {
+  \draw[black!70] (0,\y) -- (-0.09,\y);
+  \node[left, font=\scriptsize] at (-0.12,\y) {\lab};
+}
+\foreach \x in {0,2.6,5.2,7.8,10.4} \draw[black!8] (\x,0) -- (\x,5.2);
+\foreach \y in {1.7,3.4,5.1} \draw[black!8] (0,\y) -- (10.7,\y);
+
+% ------------------------------------------------------- the roof itself
+% bandwidth roof: P = beta*I, from I=0.13 (P=100) to the ridge at I=50.4
+\draw[line width=1.1pt, black!80] (0.296,0) -- (7.026,4.399);
+% compute ceiling: P = pi
+\draw[line width=1.1pt, black!80] (7.026,4.399) -- (10.7,4.399);
+\node[above left, font=\scriptsize, text=black!70] at (10.7,4.40)
+  {$\pi=38.7$\,TFLOP/s};
+\node[font=\scriptsize, text=black!70, rotate=59, anchor=south] at (3.1,2.05)
+  {$\beta=768$\,GB/s};
+
+% ridge marker
+\draw[densely dashed, black!45] (7.026,0) -- (7.026,4.399);
+\node[font=\scriptsize, text=black!60, align=center, fill=white, inner sep=1.5pt]
+  at (7.026,1.05) {ridge\\[-2pt]$I^\star\!\approx\!50$};
+
+% --------------------------------------------------- the two measured points
+% reference: I = 0.74 -> 568 GFLOP/s
+\fill[hbmcol] (2.260,1.282) circle (2.4pt);
+\node[anchor=west, font=\scriptsize, text=hbmcol, align=left]
+  at (2.42,1.16) {reference WTConv\\[-2pt]$I\!\approx\!0.74$};
+
+% fused: I = 2.3 -> 1766 GFLOP/s
+\fill[regcol] (3.540,2.120) circle (2.4pt);
+\node[anchor=west, font=\scriptsize, text=regcol, align=left]
+  at (3.70,2.32) {fused\\[-2pt]$I\!\approx\!2.3$};
+
+% the move
+\draw[-{Stealth[length=4.5pt,width=4pt]}, regcol!85, line width=0.7pt]
+  (2.40,1.40) to[bend left=18] (3.42,2.02);
+
+% shaded bandwidth-bound region annotation
+\node[font=\scriptsize\itshape, text=black!55, align=center] at (2.4,4.55)
+  {bandwidth-bound\\[-2pt]($\sim\!60\times$ left of the ridge)};
+\draw[densely dotted, black!35] (2.4,4.25) -- (2.4,2.45);
+
+\end{tikzpicture}

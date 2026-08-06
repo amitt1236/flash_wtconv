@@ -1,0 +1,71 @@
+% Figure: HBM dataflow of a single WTConv level, baseline vs. fused.
+% Requires: tikz + libraries arrows.meta, positioning, fit, backgrounds, calc
+\begin{tikzpicture}[
+  font=\small,
+  node distance=0pt,
+  hbm/.style={draw=hbmcol!80!black, fill=hbmcol!18, rounded corners=1.5pt,
+              minimum height=6.5mm, minimum width=13mm, align=center, inner sep=2pt},
+  reg/.style={draw=regcol!75!black, fill=regcol!18, rounded corners=1.5pt,
+              minimum height=6.5mm, minimum width=13mm, align=center, inner sep=2pt},
+  op/.style={draw=black!55, fill=black!5, rounded corners=1pt,
+             minimum height=5mm, minimum width=9mm, align=center, inner sep=1.5pt,
+             font=\scriptsize},
+  flow/.style={-{Stealth[length=4pt,width=3.5pt]}, draw=black!65, line width=0.5pt},
+  ghost/.style={draw=black!35, dashed, fill=none, rounded corners=1.5pt,
+                minimum height=5.5mm, minimum width=12mm, align=center, inner sep=2pt,
+                font=\scriptsize, text=black!55},
+  lbl/.style={font=\scriptsize\itshape, text=black!60},
+]
+
+%============================ (a) BASELINE ============================
+\node[lbl, anchor=west] at (0,0.95) {(a) Baseline: every stage round-trips through HBM};
+
+\node[hbm, anchor=west] (b0) at (0,0) {$\tX$\\[-1pt]\scriptsize $N_\ell$};
+\node[op,  right=4.5mm of b0]   (bop1) {\texttt{conv2d}\\[-2pt]\scriptsize WT};
+\node[hbm, right=4.5mm of bop1] (b1)   {$\tY$\\[-1pt]\scriptsize $N_\ell$};
+\node[op,  right=4.5mm of b1]   (bop2) {\texttt{conv2d}\\[-2pt]\scriptsize dw};
+\node[hbm, right=4.5mm of bop2] (b2)   {$\tZ$\\[-1pt]\scriptsize $N_\ell$};
+\node[op,  right=4.5mm of b2]   (bop3) {\texttt{mul}\\[-2pt]\scriptsize scale};
+\node[hbm, right=4.5mm of bop3] (b3)   {$\tZ'$\\[-1pt]\scriptsize $N_\ell$};
+\node[op,  right=4.5mm of b3]   (bop4) {\texttt{slice}\\[-2pt]\scriptsize LL};
+\node[hbm, right=4.5mm of bop4] (b4)   {$\tX^{(\ell+1)}$\\[-1pt]\scriptsize $\tfrac{1}{4}N_\ell$};
+
+\foreach \a/\b in {b0/bop1, bop1/b1, b1/bop2, bop2/b2, b2/bop3, bop3/b3, b3/bop4, bop4/b4}
+  \draw[flow] (\a) -- (\b);
+
+%============================ (b) FUSED ============================
+\node[lbl, anchor=west] at (0,-1.35) {(b) Fused: one read, one pass --- the transform is recomputed in registers};
+
+% ghosts: intermediates that are never materialised
+\node[ghost] (g1) at (4.55,-2.25) {$\tY$};
+\node[ghost, right=4mm of g1] (g2) {$\tZ$};
+\node[lbl, right=3mm of g2] {never written to HBM};
+
+\node[hbm, anchor=west] (f0) at (0,-3.25) {$\tX$\\[-1pt]\scriptsize $N_\ell$};
+
+\node[reg, anchor=west, minimum width=46mm, minimum height=13mm] (freg) at (2.05,-3.25)
+  {\scriptsize register-resident\\[-1pt]\scriptsize
+   $2{\times}2$ load $\to$ butterfly $\to$ MAC\\[-1pt]\scriptsize
+   $\widetilde{\mW}=\vs\odot\mW$ folded};
+
+\node[hbm, anchor=west] (f3) at (8.45,-2.85) {$\tZ'$\\[-1pt]\scriptsize $N_\ell$};
+\node[hbm, anchor=west] (f4) at (8.45,-3.72) {$\tX^{(\ell+1)}$\\[-1pt]\scriptsize $\tfrac{1}{4}N_\ell$};
+
+\draw[flow] (f0) -- node[lbl, above, pos=0.45] {read} (freg);
+\draw[flow] (freg.east) -- node[lbl, above, pos=0.6, yshift=-0.5pt] {write} (f3.west);
+\draw[flow] (freg.east) -- (f4.west);
+
+\draw[densely dotted, draw=black!35] (g1.south) -- ++(0,-4mm);
+\draw[densely dotted, draw=black!35] (g2.south) -- ++(0,-4mm);
+
+%============================ LEGEND ============================
+\begin{scope}[shift={(0,-4.75)}]
+  \node[hbm, minimum width=5mm, minimum height=3.6mm, anchor=west] (lg1) at (0,0) {};
+  \node[anchor=west, font=\scriptsize, right=1.5mm of lg1] (lt1) {HBM-resident tensor};
+  \node[reg, minimum width=5mm, minimum height=3.6mm, anchor=west, right=6mm of lt1] (lg2) {};
+  \node[anchor=west, font=\scriptsize, right=1.5mm of lg2] (lt2) {on-chip (registers)};
+  \node[ghost, minimum width=5mm, minimum height=3.6mm, anchor=west, right=6mm of lt2] (lg3) {};
+  \node[anchor=west, font=\scriptsize, right=1.5mm of lg3] {eliminated intermediate};
+\end{scope}
+
+\end{tikzpicture}

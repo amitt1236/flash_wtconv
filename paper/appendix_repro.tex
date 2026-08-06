@@ -1,0 +1,112 @@
+Every number in this paper is produced by a script in the accompanying
+artifact, and no value is transcribed into the manuscript by hand: the
+benchmark scripts emit JSON, a table generator turns that JSON into the
+\LaTeX{} fragments the paper \verb|\input|s, and re-running the pipeline
+overwrites the tables in place.
+
+\subsection{Pipeline}
+
+\begin{verbatim}
+python scripts/bench.py        --device cuda --mode both \
+                               --out results/bench_cuda.json
+python scripts/correctness.py  --device cuda \
+                               --out results/correctness.json
+python scripts/make_tables.py  --bench results/bench_cuda.json \
+                               --correctness results/correctness.json
+\end{verbatim}
+
+\noindent
+\texttt{scripts/common.py} holds the measurement harness and the weight
+synchronisation used by both entry points; \texttt{scripts/bench.py} sweeps the
+configuration grid; \texttt{scripts/correctness.py} performs the equivalence
+tests of Section~\ref{sec:equivalence}; \texttt{scripts/make\_tables.py}
+renders the tables.
+
+\subsection{Measurement protocol}
+
+\paragraph{Timing.} CUDA events bracket each individual iteration, so device
+time is measured rather than host-side launch time, and the distribution over
+iterations is retained rather than only its mean. Each configuration runs $20$
+warmup iterations --- enough to cover JIT compilation, Triton autotuning and
+cuDNN algorithm selection --- followed by $50$ timed iterations. We report the
+geometric mean of per-configuration ratios over the sweep; the raw JSON also
+carries median, standard deviation and the $10$th/$90$th percentiles for every
+configuration, which we recommend inspecting before quoting any single figure.
+
+\paragraph{Memory.} \verb|torch.cuda.reset_peak_memory_stats| followed by one
+untimed step and \verb|torch.cuda.max_memory_allocated|. This measures
+allocator high-water mark, not reserved memory.
+
+\paragraph{Weight synchronisation.} Correctness comparisons construct a
+reference module and a fused module from the same seed and then copy every
+learnable tensor from the former into the latter, so the two modules are the
+same function. The base path maps
+\verb|base_conv.weight|/\verb|.bias|/\verb|base_scale.weight| onto the fused
+module's corresponding parameters, and level $\ell$ maps
+\verb|wavelet_convs[l].weight| and \verb|wavelet_scale[l].weight|. The subband
+axis is packed identically in both ($\text{channel} = 4c+s$ with
+$s\in(\mathrm{LL},\mathrm{LH},\mathrm{HL},\mathrm{HH})$); rather than assume
+this, \texttt{correctness.py} drives the reference's own filter bank with a
+one-hot $2\times2$ patch and checks the resulting coefficient order and signs
+against Eq.~\eqref{eq:butterfly}.
+
+\paragraph{Cotangent.} Backward comparisons use a fixed random cotangent rather
+than \verb|.sum()|, which would leave sign-cancelling errors undetected.
+
+\paragraph{Tolerances.} \texttt{fp32} is held to $\text{atol}=10^{-5}$,
+$\text{rtol}=10^{-4}$; \texttt{fp16} to $2\times10^{-2}$/$10^{-2}$; \texttt{bf16}
+to $10^{-1}$/$5\times10^{-2}$. These follow from the accumulated rounding of a
+$k^2$-term dot product in the respective format rather than being tuned to make
+the test pass. We note that an absolute tolerance of $10^{-7}$, sometimes quoted
+for comparisons of this kind, is not attainable for a multi-level accumulation
+in \texttt{fp32} and should not be expected.
+
+\subsection{Configuration grid}
+
+$C\in\{32,64,128\}$; $H=W\in\{128,256,512\}$; batch size $8$;
+$L\in\{1,\dots,5\}$; $k=3$ for WTConv and, under the homogeneous protocol, for
+the plain-convolution baselines; $k=7$ for the plain-convolution baselines under
+the receptive-field-matched protocol; \texttt{fp32}, \texttt{fp16} and
+\texttt{bf16}. Baselines: \emph{depthwise} is
+\verb|nn.Conv2d(C, C, k, groups=C, padding='same')| and \emph{dense} is
+\verb|nn.Conv2d(C, C, k, padding='same')|.
+
+\subsection{Environment}
+
+The environment record (GPU, compute capability, HBM capacity, PyTorch, CUDA,
+cuDNN and Triton versions) is captured automatically into every results JSON and
+rendered into the manuscript by the table generator, so the reported hardware
+cannot drift from the hardware actually used.
+
+\subsection{Claim-to-evidence map}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{p{0.44\linewidth}p{0.48\linewidth}}
+\toprule
+Claim & Evidence \\
+\midrule
+Haar analysis is self-inverse and self-adjoint & Proposition~\ref{prop:selfinverse}; verified exactly over the rationals by \texttt{correctness.py} \\
+Closed form of the operator, Eq.~\eqref{eq:closedform} & Proposition~\ref{prop:closedform}; the cancellation of the raw low-pass carrier follows from $\mathcal{U}_m\mathcal{Q}_m=\mathrm{Id}$ on block-constant functions \\
+Single-pass synthesis & Proposition~\ref{prop:bitindexed} \\
+Reference moves $7N+\tfrac{43}{3}N(1-4^{-L})$ elements & Per-primitive accounting, Section~\ref{sec:memorybound}, read off the reference implementation stage by stage \\
+Operator is bandwidth-bound & $I\in[0.44,0.89]$ FLOP/byte against $I^\star\approx50$; Figure~\ref{fig:roofline} \\
+Fusion is exact, not approximate & Each step is an algebraic identity; residuals in Table~\ref{tab:correctness} \\
+Fused form moves $5N$ ($L{=}1$) to $7.83N$ elements & Per-stage accounting, Section~\ref{sec:prediction}; not converted into a predicted latency ratio \\
+Measured speedup & Table~\ref{tab:context} \\
+Peak memory reduction $\approx1.5\times$ & Table~\ref{tab:memory} \\
+Training parity & Figure~\ref{fig:convergence}; single run, no seed replicates \\
+Portability & Table~\ref{tab:backends} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Known gaps}
+
+For transparency we list what the artifact does \emph{not} establish. There is
+no ImageNet accuracy result connecting the fused kernels to the downstream task;
+the training evidence is a single CIFAR-10 run. There is no
+\texttt{torch.compile} arm on either side. Timing uses a single resident input
+tensor, so no host-to-device transfer or data loading is included. Each platform
+is represented by one device.

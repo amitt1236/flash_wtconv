@@ -52,6 +52,11 @@ _setup_cuda_arch()
 
 _module = None
 
+# Set to False to route every weight gradient through cuDNN's grouped depthwise
+# path instead of the dedicated reduction kernels. Only useful for A/B timing
+# and for reproducing cuDNN's exact rounding.
+FUSED_WEIGHT_GRAD = True
+
 
 def _get_module():
     global _module
@@ -132,7 +137,7 @@ def _grad_weight_scale(
     C4 = C * 4
     mod = _get_module()
 
-    if K <= mod.fused_haar_grad_weight_max_k():
+    if FUSED_WEIGHT_GRAD and K <= mod.fused_haar_grad_weight_max_k():
         grad_fused = torch.zeros(C, 4, K, K, device=level_input.device,
                                  dtype=torch.float32)
         mod.fused_haar_grad_weight(level_input, grad_output.contiguous(), grad_fused)
@@ -581,7 +586,8 @@ def _depthwise_grad_weight(input, grad_output, weight, padding, groups):
     C, K = weight.shape[0], weight.shape[2]
     mod = _get_module()
     usable = (
-        groups == C
+        FUSED_WEIGHT_GRAD
+        and groups == C
         and weight.shape[1] == 1
         and weight.shape[3] == K
         and K % 2 == 1

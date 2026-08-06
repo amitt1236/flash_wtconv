@@ -9,9 +9,8 @@ Flash WTConv optimizes the original WTConv implementation through:
 - **Weight fusion with Haar**: each depthwise-conv tap reads exactly one Haar coefficient, which comes from exactly one 2x2 input block. So the transform is folded into the conv weights and the wavelet coefficients are never written to memory.
 - **Both transforms fused**: at level 1 the inverse Haar, the deeper levels' reconstruction and the base-conv addition fold into the same kernel, so the full-resolution coefficient tensor never exists.
 - **Cascade Transform**: the multi-level inverse runs in registers in one kernel
-- **Fused weight gradient**: the weight gradient reduces the output gradient against Haar partial sums recomputed on the fly, replacing cuDNN's grouped depthwise weight gradient (K <= 5; larger kernels fall back to cuDNN)
+- **Fused weight gradient**: the weight gradient reduces the output gradient against Haar partial sums recomputed on the fly, replacing cuDNN's grouped depthwise weight gradient (K <= 5; larger kernels fall back to cuDNN). The base convolution's weight gradient gets the same treatment, minus the Haar step.
 - **Smart Scaling**: Bakes channel-wise scaling into convolution weights for zero overhead
-- **Weight gradients**: dedicated reduction kernels replace cuDNN's slow grouped depthwise weight gradient
 - **Multi-precision Support**: FP32, FP16, and BF16
 
 ### Fused wavelet level
@@ -47,11 +46,11 @@ Measured on an RTX A6000, fp32, K=3, forward+backward against the original imple
 
 | wt_levels | 16x32x256x256 | 16x32x512x512 |
 |-----------|---------------|---------------|
-| 1 | 3.4x | 3.6x |
-| 2 | 4.1x | 3.9x |
-| 3 | 4.2x | 4.1x |
-| 4 | 4.2x | 4.2x |
-| 5 | 4.2x | 4.2x |
+| 1 | 3.5x | 3.7x |
+| 2 | 4.2x | 4.1x |
+| 3 | 4.3x | 4.3x |
+| 4 | 4.4x | 4.3x |
+| 5 | 4.4x | 4.3x |
 
 Activation memory drops ~2.7x against the original, since no coefficient tensor is ever materialised.
 
@@ -64,16 +63,16 @@ Fusing the inverse into level 1 (K=5, wavelet branch only, against the same kern
 
 Level 1 saves the full-resolution coefficient round trip outright. Deeper levels pay one extra read of the input for the LL-only downsample that feeds them, so the win is smaller.
 
-Fused weight gradient vs the cuDNN grouped weight gradient it replaces (K=5, whole layer forward+backward):
+Fused weight gradients vs the cuDNN grouped weight gradient they replace (K=5, whole layer forward+backward, toggled with `cuda_haar.haar_cuda.FUSED_WEIGHT_GRAD`):
 
 | shape | wt_levels 1 | 3 | 5 |
 |-------|-------------|---|---|
-| 16x32x256x256 | 1.24x | 1.27x | 1.27x |
-| 16x32x512x512 | 1.26x | 1.28x | 1.25x |
-| 8x96x128x128 | 1.21x | 1.22x | 1.22x |
-| 4x384x64x64 | 1.17x | 1.17x | 1.17x |
+| 16x32x256x256 | 1.49x | 1.52x | 1.46x |
+| 16x32x512x512 | 1.56x | 1.82x | 1.59x |
+| 8x96x128x128 | 1.49x | 1.45x | 1.43x |
+| 4x384x64x64 | 1.37x | 1.33x | 1.30x |
 
-The kernel itself is 6.4x faster than cuDNN's (28.7 ms -> 4.5 ms at 16x32x512x512), and it also removes the coefficient tensor the cuDNN path had to materialise. The layer-level win is smaller because the *base* convolution's own cuDNN weight gradient (15.9 ms) is now the largest kernel in a training step — a plain depthwise gradient, unrelated to the wavelet branch, and the obvious next target.
+The wavelet kernel is 6.4x faster than cuDNN's (28.7 ms -> 4.4 ms at 16x32x512x512) and also removes the coefficient tensor the cuDNN path had to materialise. The *base* convolution's weight gradient — a plain depthwise gradient, unrelated to the wavelet branch — was then the largest kernel left, so it gets the same kernel minus the Haar step: 18.1 ms -> 3.7 ms. Together they take that training step from 52.8 ms to 27.8 ms, and no single kernel dominates the profile any more.
 
 Gradient accumulation uses fp32 atomics, so the weight gradient is not bitwise reproducible run to run (neither is cuDNN's depthwise path).
 

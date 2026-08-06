@@ -1,0 +1,67 @@
+The reformulation of Section~\ref{sec:method} is stated in terms of algebra and
+memory traffic, so it carries over to any accelerator whose cost is dominated by
+traffic to a large, slow memory. We re-derived the same two kernels twice more
+as a test of that claim. Table~\ref{tab:backends} collects the results.
+
+\input{results/tab_backends.tex}
+
+\subsection{Triton}
+
+The Triton realisation \citep{tillet2019triton} expresses the register-resident
+analysis of Section~\ref{sec:method} directly: for each coefficient position the
+kernel iterates the $k\times k$ tap grid with \verb|tl.static_range|, addresses
+the corresponding $2\times2$ input block, forms the four subband values, and
+accumulates into four \texttt{fp32} vectors. Because the kernel loads a compact
+four-element weight vector per tap rather than an effective $(C,4,k,k)$ kernel
+per output, its weight traffic is a quarter of the naive fused form. Block size,
+warp count and pipeline depth are left to autotuning over eleven configurations
+keyed on problem size.
+
+The backward pass mirrors the forward: it iterates the same grid, applies the
+transposed butterfly to the incoming subband gradients, and writes to a
+\emph{disjoint} $2\times2$ input block per thread, so no atomics are required for
+$\nabla_{\!X}$. Weight and scale gradients use Eq.~\eqref{eq:foldgrad} over
+recomputed coefficients.
+
+Performance matches the CUDA realisation closely --- slightly ahead in
+\texttt{fp32} ($2.71$--$3.09\times$ against $2.24$--$2.87\times$) and slightly
+behind in \texttt{fp16} --- which is the expected outcome if both are limited by
+the same traffic. Two practical differences are worth recording. Triton's JIT
+removes the dependency on a local \texttt{nvcc} installation, and its autotuner
+adapts block sizes to the device without hand-tuning. Against that, the kernel
+specialises on tensor shape, so a workload with many distinct shapes pays
+repeated compilation, and the layer opts out of Dynamo tracing, so it cannot
+currently be captured by \texttt{torch.compile}.
+
+\subsection{Apple Metal}
+
+The Metal realisation targets Apple Silicon through PyTorch's MPS backend. The
+forward cascade uses a $16\times16$ threadgroup per $32\times32$ input tile,
+staging the low-pass band in a single threadgroup buffer that is aliased and
+overwritten in place at each level ($256\to64\to16\to4$ floats) with threads
+retiring geometrically between barriers. The inverse cascade follows
+Proposition~\ref{prop:bitindexed} per thread, exactly as in CUDA. As on NVIDIA,
+\texttt{fp16} kernels convert to \texttt{fp32} on load, keep all butterflies and
+all cross-level accumulation in \texttt{fp32}, and round once at the store; the
+inter-level threadgroup buffer is \texttt{fp32} regardless of input precision.
+
+Measured speedups are $2.05$--$2.40\times$. Three caveats attach to these
+numbers and we would not want them read as a vendor comparison. First, the
+baseline is PyTorch's generic MPS backend, which is substantially less mature
+than cuDNN; this inflates the Apple-side ratios, and the dense-convolution
+column in particular ($5\times$--$13\times$ slower than the fused layer) reflects
+the maturity of the baseline far more than it reflects our kernels. Second, the
+current dispatch issues a full stream synchronisation before encoding each
+operation, which serialises host and device and makes these figures pessimistic
+for end-to-end throughput on both arms. Third, several inverse dispatches
+currently launch single-thread threadgroups, so occupancy is far below what the
+formulation permits --- the Metal numbers should be read as a lower bound on
+what the reformulation can deliver on this hardware rather than as a tuned
+result.
+
+\subsection{Coverage}
+
+The CUDA and Triton paths support \texttt{fp32}, \texttt{fp16} and
+\texttt{bf16}; the Metal path supports \texttt{fp32} and \texttt{fp16} only. All
+three implement Haar with $L\le5$, depthwise, $C_{\mathrm{in}}=C_{\mathrm{out}}$,
+and odd $k$.
