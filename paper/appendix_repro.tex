@@ -19,8 +19,7 @@ python scripts/make_tables.py  --bench results/bench_cuda.json \
 \texttt{scripts/common.py} holds the measurement harness and the weight
 synchronisation used by both entry points; \texttt{scripts/bench.py} sweeps the
 configuration grid; \texttt{scripts/correctness.py} performs the equivalence
-tests of Section~\ref{sec:equivalence}; \texttt{scripts/make\_tables.py}
-renders the tables.
+tests; \texttt{scripts/make\_tables.py} renders the tables.
 
 \subsection{Measurement protocol}
 
@@ -88,15 +87,12 @@ cannot drift from the hardware actually used.
 Claim & Evidence \\
 \midrule
 Haar analysis is self-inverse and self-adjoint & Proposition~\ref{prop:selfinverse}; verified exactly over the rationals by \texttt{correctness.py} \\
-Closed form of the operator, Eq.~\eqref{eq:closedform} & Proposition~\ref{prop:closedform}; the cancellation of the raw low-pass carrier follows from $\mathcal{U}_m\mathcal{Q}_m=\mathrm{Id}$ on block-constant functions \\
 Single-pass synthesis & Proposition~\ref{prop:bitindexed} \\
 Reference moves $7N+\tfrac{43}{3}N(1-4^{-L})$ elements & Per-primitive accounting, Section~\ref{sec:memorybound}, read off the reference implementation stage by stage \\
-Operator is bandwidth-bound & $I\in[0.44,0.89]$ FLOP/byte against $I^\star\approx50$; Figure~\ref{fig:roofline} \\
-Fusion is exact, not approximate & Each step is an algebraic identity; residuals in Table~\ref{tab:correctness} \\
-Fused form moves $5N$ ($L{=}1$) to $7.83N$ elements & Per-stage accounting, Section~\ref{sec:prediction}; not converted into a predicted latency ratio \\
-Measured speedup & Table~\ref{tab:context} \\
-Peak memory reduction $\approx1.5\times$ & Table~\ref{tab:memory} \\
-Training parity & Figure~\ref{fig:convergence}; single run, no seed replicates \\
+Operator is bandwidth-bound & $I\in[0.44,0.89]$ FLOP/byte against $I^\star\approx50$, Section~\ref{sec:memorybound} \\
+Fusion is exact, not approximate & Each step is an algebraic identity; residuals reported by \texttt{correctness.py} against the tolerances above \\
+Fused form moves $7N$ ($L{=}1$) to $8.27N$ elements & Per-stage accounting, Section~\ref{sec:prediction}; not converted into a predicted latency ratio \\
+Measured speedup & Table~\ref{tab:rfmatch}, against the reference and against plain convolutions at matched receptive field \\
 Portability & Table~\ref{tab:backends} \\
 \bottomrule
 \end{tabular}
@@ -105,8 +101,8 @@ Portability & Table~\ref{tab:backends} \\
 \subsection{Known gaps}
 
 For transparency we list what the artifact does \emph{not} establish. There is
-no ImageNet accuracy result connecting the fused kernels to the downstream task;
-the training evidence is a single CIFAR-10 run. There is no
-\texttt{torch.compile} arm on either side. Timing uses a single resident input
-tensor, so no host-to-device transfer or data loading is included. Each platform
-is represented by one device.
+no accuracy result connecting the fused kernels to a downstream task, and this
+paper reports no end-to-end training measurement: every reported ratio is
+layer-level. There is no \texttt{torch.compile} arm on either side. Timing uses a
+single resident input tensor, so no host-to-device transfer or data loading is
+included. Each platform is represented by one device.

@@ -5,7 +5,6 @@ Each kernel is checked against the operation it replaces, built from the origina
 WTConv wavelet filters (WTConv/wtconv/util/wavelet.py):
 
     haar2d                  vs wavelet_2d_transform
-    _haar_ll                vs the LL subband of wavelet_2d_transform
     fused_haar_conv_scale   vs haar -> grouped conv2d -> scale
     run_ihaar_cascade       vs the reference bottom-up reconstruction loop
     wavelet_branch          vs the whole reference wavelet branch
@@ -125,8 +124,8 @@ def test_ihaar_cascade():
 
 
 def test_wavelet_branch():
-    """Whole branch (level 1 fully fused) vs haar -> conv -> cascade -> add."""
-    print("\n[fully fused wavelet branch]")
+    """Whole branch (one autograd node) vs haar -> conv -> cascade -> add."""
+    print("\n[fused wavelet branch]")
     for L in [1, 2, 3, 5]:
         for K in [3, 5]:
             for (B, C, h, w) in [(2, 8, 64, 64), (2, 4, 33, 47)]:
@@ -151,16 +150,8 @@ def test_wavelet_branch():
                 check(f"branch L={L} K={K} {B}x{C}x{h}x{w}", got, want, 3e-5)
 
 
-def test_haar_ll():
-    print("\n[LL-only downsample]")
-    for (B, C, h, w) in [(2, 4, 32, 32), (1, 3, 33, 47), (2, 8, 64, 62)]:
-        x = torch.randn(B, C, h, w, device=DEV)
-        xp = F.pad(x, (0, w % 2, 0, h % 2))
-        check(f"haar_ll {B}x{C}x{h}x{w}", H._haar_ll(x), ref_haar(xp)[:, :, 0])
-
-
 def test_branch_grads():
-    print("\n[fully fused branch gradients]")
+    print("\n[fused wavelet branch gradients]")
     for L in [1, 2, 3]:
         for (B, C, h, w) in [(2, 6, 32, 32), (2, 4, 31, 33)]:
             torch.manual_seed(5)
@@ -285,7 +276,6 @@ def main():
         return 1
     print(f"Fused Haar kernels vs WTConv reference ops on {torch.cuda.get_device_name(0)}")
     test_haar()
-    test_haar_ll()
     test_fused_forward()
     test_ihaar_cascade()
     test_wavelet_branch()

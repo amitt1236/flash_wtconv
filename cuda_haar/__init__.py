@@ -6,7 +6,7 @@ coefficients never touch memory. Mirrors the `triton_haar` API.
 """
 
 from .haar_cuda import (
-    # Whole wavelet branch (level 1 fully fused: Haar+conv+scale+inverse+add)
+    # Whole wavelet branch (fused Haar+conv+scale per level, fused inverse+add)
     wavelet_branch,
     # Fused Haar -> conv -> scale
     fused_haar_conv_scale,

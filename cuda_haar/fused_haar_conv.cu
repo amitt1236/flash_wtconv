@@ -18,8 +18,11 @@
 // kernel" a naive fusion would build: 4x less weight traffic, 4x fewer FMAs.
 //
 // Each block stages the partial sums for its output tile (plus a K-1 halo) in
-// shared memory, so every input pixel is read from HBM exactly once instead of
-// the 4*K*K redundant reads a thread-per-pixel formulation performs.
+// shared memory, so the butterfly runs once per 2x2 block and each input pixel
+// is fetched once per tile that needs it, instead of the K*K times a
+// thread-per-output formulation would read it. Halo positions are re-staged by
+// each neighbouring block, but they are small and spatially local, so those
+// re-fetches hit L2 rather than HBM.
 //
 // Grid: one block per (b, c, output tile); block = (TILE_W, TILE_H) threads,
 // one output position (4 subbands) per thread.
@@ -128,39 +131,6 @@ __global__ void fused_haar_conv_scale_kernel(
     if (ll_out != nullptr) {
         ll_out[(size_t)bc * plane + (size_t)h2 * W2 + w2] =
             from_float<T>(sh_p[0][(threadIdx.y + R) * SW + threadIdx.x + R]);
-    }
-}
-
-// -----------------------------------------------------------------------------
-// LL-only Haar downsample: (B, C, H, W) -> (B, C, H2, W2).
-//
-// Feeds the deeper levels when level 1 is fully fused. The fused level kernel
-// cannot both emit the raw LL and consume the deeper reconstruction in one pass
-// (level 2 depends on the former, the inverse on the latter), so the LL is
-// split out into this kernel: one read of the input, a quarter-sized write.
-// -----------------------------------------------------------------------------
-template<typename T>
-__global__ void haar_ll_kernel(
-    const T* __restrict__ input,
-    T* __restrict__ output,
-    int H, int W, int H2, int W2, long N
-) {
-    for (long idx = blockIdx.x * (long)blockDim.x + threadIdx.x; idx < N;
-         idx += (long)blockDim.x * gridDim.x) {
-        const int w2 = idx % W2;
-        long t = idx / W2;
-        const int h2 = t % H2;
-        const long bc = t / H2;
-
-        const int y0 = 2 * h2, x0 = 2 * w2;
-        const T* base = input + bc * H * W;
-        const float a = to_float(base[(long)y0 * W + x0]);
-        const float b = (x0 + 1 < W) ? to_float(base[(long)y0 * W + x0 + 1]) : 0.f;
-        const float c = (y0 + 1 < H) ? to_float(base[(long)(y0 + 1) * W + x0]) : 0.f;
-        const float d = (y0 + 1 < H && x0 + 1 < W)
-                        ? to_float(base[(long)(y0 + 1) * W + x0 + 1]) : 0.f;
-
-        output[idx] = from_float<T>(0.5f * (a + b + c + d));
     }
 }
 
@@ -583,28 +553,6 @@ void fused_haar_grad_weight(
                         gwptr, B, C, H, W, H2, W2, tiles_x, tiles_area); break;
             default: TORCH_CHECK(false, "unsupported kernel size ", K);
         }
-    });
-    AT_CUDA_CHECK(cudaGetLastError());
-}
-
-void haar_ll(torch::Tensor input, torch::Tensor output) {
-    TORCH_CHECK(input.dim() == 4 && output.dim() == 4, "tensors must be (B, C, H, W)");
-    TORCH_CHECK(input.is_cuda() && input.is_contiguous(), "input must be contiguous CUDA");
-    TORCH_CHECK(output.is_contiguous(), "output must be contiguous");
-    const int B = input.size(0), C = input.size(1), H = input.size(2), W = input.size(3);
-    const int H2 = output.size(2), W2 = output.size(3);
-    TORCH_CHECK(H2 == (H + 1) / 2 && W2 == (W + 1) / 2,
-                "output spatial dims must be ceil(H/2), ceil(W/2)");
-
-    const long N = (long)B * C * H2 * W2;
-    if (N == 0) return;
-    const int threads = 256;
-    const long blocks = std::min<long>((N + threads - 1) / threads, 65535L * 16);
-    auto stream = at::cuda::getCurrentCUDAStream();
-
-    HAAR_DISPATCH_DTYPE(input, "haar_ll", [&] {
-        haar_ll_kernel<scalar_t><<<blocks, threads, 0, stream>>>(
-            haar_cptr<scalar_t>(input), haar_ptr<scalar_t>(output), H, W, H2, W2, N);
     });
     AT_CUDA_CHECK(cudaGetLastError());
 }

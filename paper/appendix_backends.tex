@@ -24,7 +24,7 @@ $\nabla_{\!X}$. Weight and scale gradients use Eq.~\eqref{eq:foldgrad} over
 recomputed coefficients.
 
 Performance matches the CUDA realisation closely --- slightly ahead in
-\texttt{fp32} ($2.71$--$3.09\times$ against $2.24$--$2.87\times$) and slightly
+\texttt{fp32} ($2.71$--$3.09\times$ against $2.24$--$2.89\times$) and slightly
 behind in \texttt{fp16} --- which is the expected outcome if both are limited by
 the same traffic. Two practical differences are worth recording. Triton's JIT
 removes the dependency on a local \texttt{nvcc} installation, and its autotuner

@@ -3,13 +3,13 @@ WTConv2d on fused CUDA kernels.
 
 The whole wavelet branch is one autograd node (cuda_haar.wavelet_branch):
 
-    level 1        ONE kernel does Haar + depthwise conv + scale + the deeper
-                   levels' reconstruction + inverse Haar + the base-conv add.
-                   Both transforms are folded into the conv weights, so the
-                   full-resolution coefficient tensor never reaches memory.
-    levels 2..L    the coefficient-producing fused kernel (a quarter of the work
-                   each), reconstructed by the fused inverse cascade onto level
-                   1's coefficient grid.
+    levels 1..L    ONE kernel per level does Haar + depthwise conv + scale, with
+                   the scale folded into the conv weights, so the wavelet
+                   coefficients are formed on chip and only the filtered result
+                   (plus the raw LL the next level needs) reaches memory.
+    reconstruction ONE kernel walks the whole inverse cascade in registers and
+                   folds the base-conv add into its final store, so no
+                   intermediate low-pass or reconstruction tensor is written.
 
 The base convolution keeps its own scaled depthwise conv (cuDNN, with the scale
 folded into weight and bias).

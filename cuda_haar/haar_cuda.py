@@ -259,29 +259,20 @@ def _pad_even(x: torch.Tensor) -> torch.Tensor:
     return x
 
 
-def _haar_ll(x: torch.Tensor) -> torch.Tensor:
-    """LL subband only: (B, C, H, W) -> (B, C, ceil(H/2), ceil(W/2))."""
-    B, C, H, W = x.shape
-    out = torch.empty(B, C, (H + 1) // 2, (W + 1) // 2, device=x.device, dtype=x.dtype)
-    _get_module().haar_ll(x, out)
-    return out
-
-
 class WaveletBranchFunction(Function):
     """
     The complete WTConv wavelet branch as a single autograd node.
 
-    Level 1 runs as ONE kernel -- Haar, conv, scale, the deeper levels'
-    reconstruction, the inverse Haar and the base-conv addition all fused -- so
-    the full-resolution coefficient tensor is never materialised. The deeper
-    levels (a quarter of the work each) keep the coefficient-producing kernel,
-    since the cascade has to consume them.
+    Every level runs the coefficient-producing fused kernel -- Haar, conv and
+    scale in one pass -- emitting its filtered coefficients for the cascade plus,
+    except at the deepest level, the raw LL the next level decomposes. The
+    inverse cascade then reconstructs all levels in one kernel and folds the
+    base-conv addition into its final store, so no intermediate low-pass or
+    reconstruction tensor is ever materialised.
 
-    Owning the whole branch is what makes that possible: level 2 needs level 1's
-    raw LL while level 1's inverse needs level 2's reconstruction, so the two
-    cannot be one kernel. Splitting them across separate autograd nodes would
-    force the raw-LL gradient into a separate full-resolution add; here it folds
-    into the same grad-input kernel it always did.
+    Owning the whole branch is what makes the last part possible: splitting the
+    levels across separate autograd nodes would force the raw-LL gradient into a
+    separate full-resolution add; here it folds into the same grad-input kernel.
     """
 
     @staticmethod

@@ -1,6 +1,6 @@
 # Wavelet Convolutions Are Memory-Bound — TMLR submission
 
-Source for the paper. Builds to a 17-page `main.pdf` with TeX Live 2026.
+Source for the paper. Builds `main.pdf` with TeX Live 2026.
 
 ## Build
 
@@ -38,11 +38,18 @@ main.bib                  41 references, verified against DBLP/publisher records
 appendix_repro.tex        Appendix A — reproducibility, claim-to-evidence map
 appendix_backends.tex     Appendix C — Triton and Metal
 figures/fig_dataflow.tex  Fig 1  HBM dataflow, baseline vs fused (TikZ)
-figures/fig_roofline.tex  Fig 2  roofline placement (TikZ)
-figures/fig_convergence.tex Fig 3 CIFAR-10 curves, cropped from wandb.pdf
 results/*.tex             generated tables — do not edit by hand
 scripts/                  measurement harness
 ```
+
+The manuscript currently `\input`s only `figures/fig_dataflow.tex`,
+`results/tab_rfmatch.tex` and `results/tab_backends.tex`. The other generated
+fragments — `figures/fig_roofline.tex`, `figures/fig_convergence.tex`,
+`results/tab_context.tex`, `results/tab_memory.tex`,
+`results/tab_correctness.tex` — are kept because the harness regenerates them,
+but they belong to the Experiments and Portability sections that were dropped
+from `main.tex`, so nothing references them. Re-adding either section means
+re-adding the corresponding `\input`.
 
 ## Regenerating the numbers
 
@@ -69,12 +76,8 @@ versions, captured automatically) and `macros.tex` (headline numbers).
 
 - **`results/tab_correctness.tex` is a placeholder.** Its structural rows are
   exact and machine-independent; the numerical deviation columns are `---`
-  until `correctness.py` runs on a CUDA device. This is the one table in the
-  paper that is not yet populated with measurements.
-- The paper quotes a $12\%$ maximum deviation between the I/O model and the
-  measured `fp32` speedup. `seed_from_report.py` computes that deviation row
-  from the data, so it updates itself; the prose in `main.tex` §1, §6.3 and §10
-  quotes it and must be checked if the measurements change.
+  until `correctness.py` runs on a CUDA device. It is not currently `\input` by
+  the manuscript (see the layout note above).
 
 ## Scope note
 

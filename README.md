@@ -7,8 +7,7 @@ A high-performance CUDA/Triton/Metal implementation of the Wavelet Convolution (
 Flash WTConv optimizes the original WTConv implementation through:
 
 - **Weight fusion with Haar**: each depthwise-conv tap reads exactly one Haar coefficient, which comes from exactly one 2x2 input block. So the transform is folded into the conv weights and the wavelet coefficients are never written to memory.
-- **Both transforms fused**: at level 1 the inverse Haar, the deeper levels' reconstruction and the base-conv addition fold into the same kernel, so the full-resolution coefficient tensor never exists.
-- **Cascade Transform**: the multi-level inverse runs in registers in one kernel
+- **Cascade Transform**: the multi-level inverse runs in registers in one kernel, with the base-conv addition folded into its final store, so no intermediate low-pass or reconstruction tensor is ever written.
 - **Fused weight gradient**: the weight gradient reduces the output gradient against Haar partial sums recomputed on the fly, replacing cuDNN's grouped depthwise weight gradient (K <= 5; larger kernels fall back to cuDNN). The base convolution's weight gradient gets the same treatment, minus the Haar step.
 - **Smart Scaling**: Bakes channel-wise scaling into convolution weights for zero overhead
 - **Multi-precision Support**: FP32, FP16, and BF16
@@ -23,22 +22,13 @@ partial sums        S  = (a+b+c+d)/2   Dh = (a+b-c-d)/2
                     Dv = (a-b+c-d)/2   Dd = (a-b-c+d)/2
 accumulate          acc[LL] += w[c,0,kh,kw] * S     acc[LH] += w[c,1,kh,kw] * Dh
                     acc[HL] += w[c,2,kh,kw] * Dv    acc[HH] += w[c,3,kh,kw] * Dd
-level 1 only        acc[LL] += deeper-level reconstruction
-                    y[2h2..+1, 2w2..+1] = inverse_haar(acc) + base_conv
+store               coeffs[c, 0..3, h2, w2] = acc
+                    ll[c, h2, w2] = S at the centre tap   (skipped at the deepest level)
 ```
 
-`w` is `scale * weight`, folded on the host into a `(C, 4, K, K)` fp32 tensor — 4x less weight traffic than the `(C, 4, 2K, 2K)` "effective kernel" a naive fusion would build. Each CUDA block stages its output tile's partial sums (plus a `K-1` halo) in shared memory, so every input pixel is read from HBM exactly once.
+`w` is `scale * weight`, folded on the host into a `(C, 4, K, K)` fp32 tensor — 4x less weight traffic than the `(C, 4, 2K, 2K)` "effective kernel" a naive fusion would build. Each CUDA block stages its output tile's partial sums (plus a `K-1` halo) in shared memory, so the butterfly runs once per 2x2 block and each input pixel is fetched once per tile that needs it, instead of the `K*K` times a thread-per-output formulation would read it; the halo positions are re-staged by neighbouring blocks, but they are small and local enough to hit L2 rather than HBM.
 
-Composing the two transforms gives a polyphase-structured full-resolution convolution,
-
-```
-y[2h+qy, 2w+qx] = SUM_{kh,kw} SUM_{ry,rx} W[qy,qx][ry,rx][kh,kw] * x[2(h+kh-R)+ry, 2(w+kw-R)+rx]
-W[qy,qx][ry,rx][kh,kw] = SUM_s H[s,qy,qx] * H[s,ry,rx] * w_s[kh,kw]     (H = 4x4 Haar matrix)
-```
-
-whose 16 phase pairs come from only `4*K*K` parameters. Keeping it factored (partial sums -> `K*K` taps -> butterfly) costs exactly what the unfused convolution did, while materialising `W` would mean 4x the multiply-accumulates.
-
-Levels 2..L still produce coefficients, because the cascade has to consume them; they are a quarter of the work each. The whole branch is a single autograd node, which is what lets the raw-LL gradient fold into the same grad-input kernel as the coefficient gradients.
+Every level runs this kernel, because the cascade has to consume the coefficients; deeper levels are a quarter of the work each. The whole branch is a single autograd node, which is what lets the raw-LL gradient fold into the same grad-input kernel as the coefficient gradients.
 
 ## Performance
 
@@ -53,15 +43,6 @@ Measured on an RTX A6000, fp32, K=3, forward+backward against the original imple
 | 5 | 4.4x | 4.3x |
 
 Activation memory drops ~2.7x against the original, since no coefficient tensor is ever materialised.
-
-Fusing the inverse into level 1 (K=5, wavelet branch only, against the same kernels with a separate inverse pass):
-
-| wt_levels | forward | fwd+bwd |
-|-----------|---------|---------|
-| 1 | 1.88x | 1.10x |
-| 2-5 | 1.19x | 1.02x |
-
-Level 1 saves the full-resolution coefficient round trip outright. Deeper levels pay one extra read of the input for the LL-only downsample that feeds them, so the win is smaller.
 
 Fused weight gradients vs the cuDNN grouped weight gradient they replace (K=5, whole layer forward+backward, toggled with `cuda_haar.haar_cuda.FUSED_WEIGHT_GRAD`):
 
@@ -166,7 +147,7 @@ y = model(x)
 ```
 ├── wtconv_model/      # Flash WTConv implementations
 ├── cuda_haar/         # CUDA kernels
-│   ├── fused_haar_conv.cu   # fused Haar+conv+scale (+inverse) fwd/bwd, LL downsample
+│   ├── fused_haar_conv.cu   # fused Haar+conv+scale fwd/bwd, fused weight gradient
 │   ├── ihaar_cascade.cu     # 1-5 level inverse cascade with optional fused add
 │   ├── depthwise_grad.cu    # base-conv weight gradient
 │   ├── haar_common.cuh      # dtype helpers, Haar / inverse-Haar primitives
