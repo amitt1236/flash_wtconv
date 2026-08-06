@@ -6,9 +6,6 @@ void fused_haar_conv_forward(torch::Tensor input, torch::Tensor fused_weight,
                              torch::Tensor output, c10::optional<torch::Tensor> ll_output);
 void fused_haar_conv_backward(torch::Tensor grad_output, torch::Tensor fused_weight,
                               torch::Tensor grad_input, c10::optional<torch::Tensor> grad_ll);
-void fused_haar_conv_ihaar(torch::Tensor input, torch::Tensor fused_weight,
-                           torch::Tensor output, c10::optional<torch::Tensor> ll_add,
-                           c10::optional<torch::Tensor> base_add);
 void fused_haar_grad_weight(torch::Tensor input, torch::Tensor grad_output,
                             torch::Tensor grad_fused_weight);
 int fused_haar_grad_weight_max_k();
@@ -33,10 +30,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           "Fused Haar + depthwise conv + scale, grad w.r.t. input (CUDA)",
           py::arg("grad_output"), py::arg("fused_weight"), py::arg("grad_input"),
           py::arg("grad_ll") = py::none());
-    m.def("fused_haar_conv_ihaar", &fused_haar_conv_ihaar,
-          "Fully fused level: Haar + conv + scale + inverse Haar + adds (CUDA)",
-          py::arg("input"), py::arg("fused_weight"), py::arg("output"),
-          py::arg("ll_add") = py::none(), py::arg("base_add") = py::none());
     m.def("fused_haar_grad_weight", &fused_haar_grad_weight,
           "Weight gradient straight from the level input, no coefficients (CUDA)");
     m.def("fused_haar_grad_weight_max_k", &fused_haar_grad_weight_max_k,

@@ -297,32 +297,24 @@ class WaveletBranchFunction(Function):
         B, C, H, W = x.shape
         fused_ws = [compute_scaled_weight(w, s, K) for w, s in zip(weights, scales)]
 
-        # Per-level (padded) inputs, kept for the weight gradients
-        x0 = _pad_even(x.contiguous())
-        level_inputs = [x0]
-        H1, W1 = x0.shape[2] // 2, x0.shape[3] // 2
+        current = x.contiguous()
+        level_inputs = []
+        level_coeffs = []
 
-        ll_add = None
-        if num_levels > 1:
-            current = _haar_ll(x0)
-            deeper = []
-            for i in range(1, num_levels):
-                padded = _pad_even(current)
-                level_inputs.append(padded)
-                h2, w2 = padded.shape[2] // 2, padded.shape[3] // 2
-                coeffs = torch.empty(B, C, 4, h2, w2, device=x.device, dtype=x.dtype)
-                ll_out = (torch.empty(B, C, h2, w2, device=x.device, dtype=x.dtype)
-                          if i < num_levels - 1 else None)
-                mod.fused_haar_conv_forward(padded, fused_ws[i], coeffs, ll_out)
-                deeper.append(coeffs)
-                current = ll_out
-
-            # Reconstruct levels 2..L onto level 1's coefficient grid
-            ll_add = torch.empty(B, C, H1, W1, device=x.device, dtype=x.dtype)
-            mod.ihaar_cascade(deeper, ll_add, None)
+        for i in range(num_levels):
+            padded = _pad_even(current)
+            level_inputs.append(padded)
+            h2, w2 = padded.shape[2] // 2, padded.shape[3] // 2
+            coeffs = torch.empty(B, C, 4, h2, w2, device=x.device, dtype=x.dtype)
+            ll_out = (torch.empty(B, C, h2, w2, device=x.device, dtype=x.dtype)
+                      if i < num_levels - 1 else None)
+            mod.fused_haar_conv_forward(padded, fused_ws[i], coeffs, ll_out)
+            level_coeffs.append(coeffs)
+            current = ll_out
 
         output = torch.empty(B, C, H, W, device=x.device, dtype=x.dtype)
-        mod.fused_haar_conv_ihaar(x0, fused_ws[0], output, ll_add, base_out)
+        base_out_cont = base_out.contiguous() if base_out is not None else None
+        mod.ihaar_cascade(level_coeffs, output, base_out_cont)
 
         ctx.save_for_backward(*level_inputs, *fused_ws, *weights, *scales)
         ctx.num_levels = num_levels
