@@ -201,7 +201,7 @@ I_{\mathrm{ref}} \;=\; \frac{63.3N}{85.3N} \;\approx\; 0.74~\text{FLOP/byte}.
 \begin{figure}[t]
 \centering
 \input{figures/fig_dataflow.tex}
-\caption{HBM dataflow for one WTConv decomposition level $\ell$, with $N_\ell = N/4^{\ell-1}$ the number of elements entering that level. (a)~The reference implementation expresses the level as a chain of framework primitives; every stage materialises a full-size tensor in HBM, so the level costs $6N_\ell$ of traffic. (b)~The fused formulation reads the input once, evaluates the Haar butterfly and the depthwise convolution on chip against weights that already carry the learned scale, and writes only the results that later stages genuinely need, for $\tfrac94 N_\ell$. $\tY$ and $\tZ$ are never written; the deepest level omits the raw low-pass write as well, costing $2N_L$.}
+\caption{HBM dataflow for one WTConv decomposition level $\ell$, with $N_\ell = N/4^{\ell-1}$ the number of elements entering that level. (a)~The reference implementation expresses the level as a chain of framework primitives; every stage materialises a full-size tensor in HBM. (b)~The fused formulation reads the input once, evaluates the Haar butterfly and the depthwise convolution on chip against weights that already carry the learned scale, and writes only the results. $\tY$ and $\tZ$ are never written,}
 \label{fig:dataflow}
 \end{figure}
 
