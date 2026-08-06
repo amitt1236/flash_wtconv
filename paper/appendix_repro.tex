@@ -26,7 +26,7 @@ tests; \texttt{scripts/make\_tables.py} renders the tables.
 \paragraph{Timing.} CUDA events bracket each individual iteration, so device
 time is measured rather than host-side launch time, and the distribution over
 iterations is retained rather than only its mean. Each configuration runs $20$
-warmup iterations --- enough to cover JIT compilation, Triton autotuning and
+warmup iterations --- enough to cover JIT compilation and
 cuDNN algorithm selection --- followed by $50$ timed iterations. We report the
 geometric mean of per-configuration ratios over the sweep; the raw JSON also
 carries median, standard deviation and the $10$th/$90$th percentiles for every
@@ -73,7 +73,7 @@ the receptive-field-matched protocol; \texttt{fp32}, \texttt{fp16} and
 \subsection{Environment}
 
 The environment record (GPU, compute capability, HBM capacity, PyTorch, CUDA,
-cuDNN and Triton versions) is captured automatically into every results JSON and
+and cuDNN versions) is captured automatically into every results JSON and
 rendered into the manuscript by the table generator, so the reported hardware
 cannot drift from the hardware actually used.
 
@@ -93,7 +93,6 @@ Operator is bandwidth-bound & $I\in[0.44,0.89]$ FLOP/byte against $I^\star\appro
 Fusion is exact, not approximate & Each step is an algebraic identity; residuals reported by \texttt{correctness.py} against the tolerances above \\
 Fused form moves $7N$ ($L{=}1$) to $8.27N$ elements & Per-stage accounting, Section~\ref{sec:prediction}; not converted into a predicted latency ratio \\
 Measured speedup & Table~\ref{tab:rfmatch}, against the reference and against plain convolutions at matched receptive field \\
-Portability & Table~\ref{tab:backends} \\
 \bottomrule
 \end{tabular}
 \end{table}

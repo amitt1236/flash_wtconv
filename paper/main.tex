@@ -62,7 +62,7 @@
 \maketitle
 
 \begin{abstract}
-Wavelet convolution (WTConv) attains a receptive field that grows exponentially in the number of decomposition levels while its parameter count grows only linearly, and it drops into standard backbones without architectural change. Its reference implementation is nevertheless slower than the dense $7\times7$ convolution it is meant to replace, which has kept an asymptotically attractive operator practically unattractive. We show that this gap is not a constant-factor engineering artifact but a direct consequence of how the operator is expressed: WTConv performs $\mathcal{O}(1)$ arithmetic per element at an arithmetic intensity of $0.4$--$0.9$~FLOP/byte, roughly two orders of magnitude below the balance point of a modern GPU, so its cost is determined almost entirely by data movement between stages that each round-trip through high-bandwidth memory. We give an exact I/O-complexity accounting of the operator, deriving that the reference form moves $7N + \tfrac{43}{3}N(1-4^{-L})$ elements, i.e.\ $17.8$--$21.3N$, for an input of $N=B\cdot C\cdot H\cdot W$ elements and $L$ levels, against $2N$ of compulsory traffic, and we close most of that gap with three exact algebraic reformulations: the Haar analysis cascade is recomputed in registers at low arithmetic cost because the transform is multiplication-free; the $L$-level synthesis cascade collapses into a single closed-form pass across all levels whose sign pattern is indexed by the bits of the output coordinate, eliminating every intermediate low-pass plane; and the learned per-channel scale is folded into the convolution weights by linearity. Because the normalised Haar matrix satisfies $\mathbf{H}=\mathbf{H}^{\!\top}=\mathbf{H}^{-1}$, analysis and synthesis exchange roles during backpropagation, so no separate derivative of the Haar transform is needed. The resulting formulation is a bit-exact reassociation of the original operator, not an approximation, and it moves $7N$ elements at $L{=}1$ and under $8.3N$ for any $L$, a $2.5$--$2.6\times$ reduction in traffic. Latency is a separate question, which we treat separately: a CUDA realisation measures $2.24$--$2.89\times$ in \texttt{fp32} and up to $3.85\times$ in \texttt{fp16} against the reference. Because the argument is about data movement rather than any hardware feature, the same formulation transfers unchanged to Triton and to Apple Metal.
+Wavelet convolution (WTConv) expands a network's receptive field exponentially with the number of decomposition levels while keeping parameter count linear, providing an efficient drop-in replacement for standard convolutions. However, because its reference implementation operates at an arithmetic intensity of $0.4$--$0.9$~FLOP/byte, the operator is severely memory-bound. When configured with $3\times3$ kernels to replace large dense convolutions (such as $7\times7$), the reference implementation is slower in wall-clock time due to excessive data movement through high-bandwidth memory (HBM). We resolve this bottleneck with an exact, I/O-aware formulation based on three algebraic reformulations: (1)~recomputing the multiplication-free Haar analysis in registers on chip, (2)~collapsing the multi-level synthesis cascade into a single closed-form pass indexed by output coordinate bits, and (3)~folding learned per-channel scales into the convolution weights. The resulting formulation is a bit-exact reassociation of the operator that reduces HBM traffic by $2.5$--$2.6\times$ across all levels (moving under $8.3N$ elements for any level count $L$, compared to up to $21.3N$ for the reference). A CUDA implementation achieves speedups of $2.24$--$2.89\times$ in \texttt{fp32} and up to $3.85\times$ in \texttt{fp16} over the reference, making WTConv faster than dense $7\times7$ convolutions across all levels.
 \end{abstract}
 
 %==============================================================================
@@ -93,7 +93,7 @@ Two structural properties of the Haar basis make the reassociation unusually cle
 \item \textbf{Exactness, not approximation.} Every step is a reassociation of the same multilinear map, so agreement with the reference is limited only by floating-point reassociation error, which we quantify for the forward pass and for every gradient the layer produces.
 \end{itemize}
 
-We develop the argument for a single CUDA realisation to keep the exposition concrete. Because the reformulation is about data movement and not about any hardware feature, it transfers unchanged; we summarise Triton and Apple~Metal realisations in \Cref{app:backends}.
+We present and evaluate a custom CUDA implementation of this formulation.
 
 %==============================================================================
 \section{Background}
@@ -342,13 +342,12 @@ Traffic removed & $2.54\times$ & $2.57\times$ & $2.58\times$ & $2.58\times$ & $2
 
 \textbf{Shift-variance.} As is already true of the reference operator, the $2^{\ell}$-aligned decomposition grid makes WTConv equivariant only to translations by multiples of $2^{L}$. Our reformulation is exactly equivalent, so it neither introduces nor removes this property.
 
-\textbf{Backend maturity.} The Metal comparison is against PyTorch's MPS backend, which is considerably less mature than cuDNN; the Apple-side ratios should be read as a portability demonstration, not as a like-for-like vendor comparison.
 
 %==============================================================================
 \section{Conclusion}
 %==============================================================================
 
-WTConv's difficulty was never its arithmetic. Expressed as a chain of framework primitives it runs at under $2\%$ of a modern GPU's arithmetic capability, spending its time moving tensors that need never have existed. Accounting for those bytes exactly, and removing them with three algebraic identities (a register-resident multiplication-free analysis, a synthesis cascade collapsed into a bit-indexed closed form, and a scale folded into the weights), yields a bit-exact reformulation whose cost is within a small constant of the compulsory traffic. We do not claim that the ratio of bytes predicts the ratio of seconds; what the account buys is the identification of the quantity to remove, and that the same identities reproduce the gain on two other stacks suggests the identification is the right one. The broader point is that an operator's asymptotic parameter or FLOP advantage says little about whether it is usable; for the growing class of layers built from cheap, structured, multi-stage transforms, the I/O cost model is the one that predicts practice.
+WTConv's difficulty was never its arithmetic. Expressed as a chain of framework primitives it runs at under $2\%$ of a modern GPU's arithmetic capability, spending its time moving tensors that need never have existed. Accounting for those bytes exactly, and removing them with three algebraic identities (a register-resident multiplication-free analysis, a synthesis cascade collapsed into a bit-indexed closed form, and a scale folded into the weights), yields a bit-exact reformulation whose cost is within a small constant of the compulsory traffic. We do not claim that the ratio of bytes predicts the ratio of seconds; what the account buys is the identification of the quantity to remove. The broader point is that an operator's asymptotic parameter or FLOP advantage says little about whether it is usable; for the growing class of layers built from cheap, structured, multi-stage transforms, the I/O cost model is the one that predicts practice.
 
 \subsubsection*{Broader Impact Statement}
 This work reduces the time and energy required to evaluate an existing operator without changing its function; the primary effect is lower computational cost for practitioners already using WTConv. We see no application-specific ethical concerns beyond those already attached to efficient computer vision generally.
@@ -385,8 +384,5 @@ $7\times7$ layer is not functionally interchangeable with a dense one.
 
 \input{results/tab_rfmatch.tex}
 
-\section{Other backends}
-\label{app:backends}
-\input{appendix_backends.tex}
 
 \end{document}
