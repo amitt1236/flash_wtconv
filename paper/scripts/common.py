@@ -24,7 +24,7 @@ import torch.nn as nn
 
 # --- make the project importable regardless of where the script is run from ---
 _HERE = Path(__file__).resolve()
-_REPO = _HERE.parents[2]                     # .../wt_tmlr
+_REPO = _HERE.parents[2]                     # repository root
 _WTCONV = _REPO / "WTConv"
 for _p in (str(_WTCONV), str(_REPO)):
     if _p not in sys.path:
@@ -49,12 +49,12 @@ def _reference_wtconv(C: int, K: int, levels: int) -> nn.Module:
 
 
 def _fused_cuda_wtconv(C: int, K: int, levels: int) -> nn.Module:
-    from fast_wtconv.wtconv import WTConv2d as CudaWTConv2d
+    from wtconv_model.wtconv import WTConv2d as CudaWTConv2d
     return CudaWTConv2d(C, C, kernel_size=K, wt_levels=levels, bias=True)
 
 
 def _fused_triton_wtconv(C: int, K: int, levels: int) -> nn.Module:
-    from fast_wtconv.wtconv_triton import WTConv2d as TritonWTConv2d
+    from wtconv_model.wtconv_triton import WTConv2d as TritonWTConv2d
     return TritonWTConv2d(C, C, kernel_size=K, wt_levels=levels, bias=True)
 
 

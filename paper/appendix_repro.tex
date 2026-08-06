@@ -7,7 +7,8 @@ overwrites the tables in place.
 \subsection{Pipeline}
 
 \begin{verbatim}
-python scripts/bench.py        --device cuda --mode both \
+python scripts/bench.py        --device cuda --protocol both --mode both \
+                               --methods depthwise,dense,reference,fused_cuda \
                                --out results/bench_cuda.json
 python scripts/correctness.py  --device cuda \
                                --out results/correctness.json
@@ -65,8 +66,11 @@ in \texttt{fp32} and should not be expected.
 $C\in\{32,64,128\}$; $H=W\in\{128,256,512\}$; batch size $8$;
 $L\in\{1,\dots,5\}$; $k=3$ for WTConv and, under the homogeneous protocol, for
 the plain-convolution baselines; $k=7$ for the plain-convolution baselines under
-the receptive-field-matched protocol; \texttt{fp32}, \texttt{fp16} and
-\texttt{bf16}. Baselines: \emph{depthwise} is
+the receptive-field-matched protocol; \texttt{fp32} and \texttt{fp16} for the
+latency and memory sweep, with \texttt{bf16} additionally covered by the
+equivalence tests. Each of the two protocols is measured both for a forward pass
+and for a forward-and-backward step, giving the $864$ measurements reported in
+Section~\ref{sec:results}. Baselines: \emph{depthwise} is
 \verb|nn.Conv2d(C, C, k, groups=C, padding='same')| and \emph{dense} is
 \verb|nn.Conv2d(C, C, k, padding='same')|.
 
@@ -90,9 +94,11 @@ Haar analysis is self-inverse and self-adjoint & Proposition~\ref{prop:selfinver
 Single-pass synthesis & Proposition~\ref{prop:bitindexed} \\
 Reference moves $7N+\tfrac{43}{3}N(1-4^{-L})$ elements & Per-primitive accounting, Section~\ref{sec:memorybound}, read off the reference implementation stage by stage \\
 Operator is bandwidth-bound & $I\in[0.44,0.89]$ FLOP/byte against $I^\star\approx50$, Section~\ref{sec:memorybound} \\
-Fusion is exact, not approximate & Each step is an algebraic identity; residuals reported by \texttt{correctness.py} against the tolerances above \\
+Fusion is exact, not approximate & Each step is an algebraic identity; residuals reported by \texttt{correctness.py} in Table~\ref{tab:correctness} against the tolerances above \\
 Fused form moves $7N$ ($L{=}1$) to $8.27N$ elements & Per-stage accounting, Section~\ref{sec:prediction}; not converted into a predicted latency ratio \\
-Measured speedup & Table~\ref{tab:rfmatch}, against the reference and against plain convolutions at matched receptive field \\
+Measured speedup & Tables~\ref{tab:latency} and~\ref{tab:latency-train}, against the reference and against plain convolutions at matched kernel size and matched receptive field \\
+Measured peak memory & Table~\ref{tab:memory} (training step) and Table~\ref{tab:memory-inference} (inference) \\
+Measured speedup exceeds the traffic ratio & Section~\ref{sec:results-traffic}: launch count and occupancy, not additional traffic removed \\
 \bottomrule
 \end{tabular}
 \end{table}
