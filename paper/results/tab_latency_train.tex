@@ -3,7 +3,7 @@
 
 \begin{table}[t]
 \centering
-\caption{Latency of a full training step (forward and backward) relative to the reference WTConv ($1.00\times$; higher is faster), same sweep and same conventions as \Cref{tab:latency}. The backward pass moves the same intermediates in the opposite direction, so the reformulation applies to it unchanged.}
+\caption{Latency of a full training step (forward and backward) relative to the reference WTConv ($1.00\times$; higher is faster), Forward latency of every method relative to the reference WTConv ($1.00\times$; higher is faster). WTConv runs at $k{=}3$ throughout; the plain convolutions appear both at the same kernel size and at $k{=}7$, which is the receptive-field-matched comparison a practitioner faces. Each entry is the geometric mean of per-configuration ratios over $C\in\{32,64,128\}$ and $H{=}W\in\{128,256,512\}$ at $B{=}8$.}
 \label{tab:latency-train}
 \begin{tabular}{llccccc}
 \toprule

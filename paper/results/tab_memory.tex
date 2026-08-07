@@ -3,7 +3,7 @@
 
 \begin{table}[t]
 \centering
-\caption{Peak allocated memory over a training step relative to the reference WTConv ($1.00\times$; higher means the method needs less memory), same sweep as \Cref{tab:latency}. Measured as the CUDA allocator high-water mark, not reserved memory. Fusion removes the per-level coefficient tensors from the autograd tape, which is where the saving comes from.}
+\caption{Peak allocated memory over a training step as a fraction of the reference WTConv's footprint ($1.00\times$; \emph{lower is better}), same sweep as \Cref{tab:latency-train}.}
 \label{tab:memory}
 \begin{tabular}{llccccc}
 \toprule
@@ -11,23 +11,23 @@
 \cmidrule(lr){3-7}
  & & 1 & 2 & 3 & 4 & 5 \\
 \midrule
-Depthwise conv, $k{=}3$ & \texttt{fp32} & 1.59$\times$ & 2.32$\times$ & 2.32$\times$ & 2.32$\times$ & 2.32$\times$ \\
- & \texttt{fp16} & 1.38$\times$ & 2.01$\times$ & 2.01$\times$ & 2.01$\times$ & 2.01$\times$ \\
+Depthwise conv, $k{=}3$ & \texttt{fp32} & 0.63$\times$ & 0.43$\times$ & 0.43$\times$ & 0.43$\times$ & 0.43$\times$ \\
+ & \texttt{fp16} & 0.72$\times$ & 0.50$\times$ & 0.50$\times$ & 0.50$\times$ & 0.50$\times$ \\
 \addlinespace[2pt]
-Dense conv, $k{=}3$ & \texttt{fp32} & 1.60$\times$ & 2.33$\times$ & 2.33$\times$ & 2.33$\times$ & 2.33$\times$ \\
- & \texttt{fp16} & 1.52$\times$ & 2.22$\times$ & 2.22$\times$ & 2.22$\times$ & 2.22$\times$ \\
+Dense conv, $k{=}3$ & \texttt{fp32} & 0.62$\times$ & 0.43$\times$ & 0.43$\times$ & 0.43$\times$ & 0.43$\times$ \\
+ & \texttt{fp16} & 0.66$\times$ & 0.45$\times$ & 0.45$\times$ & 0.45$\times$ & 0.45$\times$ \\
 \addlinespace[2pt]
-Depthwise conv, $k{=}7$ & \texttt{fp32} & 1.59$\times$ & 2.32$\times$ & 2.32$\times$ & 2.32$\times$ & 2.32$\times$ \\
- & \texttt{fp16} & 1.38$\times$ & 2.01$\times$ & 2.01$\times$ & 2.01$\times$ & 2.01$\times$ \\
+Depthwise conv, $k{=}7$ & \texttt{fp32} & 0.63$\times$ & 0.43$\times$ & 0.43$\times$ & 0.43$\times$ & 0.43$\times$ \\
+ & \texttt{fp16} & 0.72$\times$ & 0.50$\times$ & 0.50$\times$ & 0.50$\times$ & 0.50$\times$ \\
 \addlinespace[2pt]
-Dense conv, $k{=}7$ & \texttt{fp32} & 1.51$\times$ & 2.19$\times$ & 2.19$\times$ & 2.19$\times$ & 2.19$\times$ \\
- & \texttt{fp16} & 1.48$\times$ & 2.15$\times$ & 2.15$\times$ & 2.15$\times$ & 2.15$\times$ \\
+Dense conv, $k{=}7$ & \texttt{fp32} & 0.66$\times$ & 0.46$\times$ & 0.46$\times$ & 0.46$\times$ & 0.46$\times$ \\
+ & \texttt{fp16} & 0.68$\times$ & 0.46$\times$ & 0.46$\times$ & 0.46$\times$ & 0.46$\times$ \\
 \addlinespace[2pt]
 WTConv, reference & \texttt{fp32} & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ \\
  & \texttt{fp16} & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ \\
 \addlinespace[2pt]
-WTConv, \textbf{fused} & \texttt{fp32} & 1.85$\times$ & 2.34$\times$ & 2.29$\times$ & 2.28$\times$ & 2.28$\times$ \\
- & \texttt{fp16} & 1.85$\times$ & 2.34$\times$ & 2.29$\times$ & 2.28$\times$ & 2.27$\times$ \\
+WTConv, \textbf{fused} & \texttt{fp32} & 0.54$\times$ & 0.43$\times$ & 0.44$\times$ & 0.44$\times$ & 0.44$\times$ \\
+ & \texttt{fp16} & 0.54$\times$ & 0.43$\times$ & 0.44$\times$ & 0.44$\times$ & 0.44$\times$ \\
 \addlinespace[2pt]
 \bottomrule
 \end{tabular}
