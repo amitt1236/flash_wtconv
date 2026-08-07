@@ -405,8 +405,9 @@ RF-matched parameters / channel       & $101$ & $401$ & $1601$ & $6401$ & $25601
 $(C,H)$ sweep, of the per-configuration ratio between the reference WTConv and
 the method in question, so the reference is $1.00\times$ by construction. Latency
 is reported as a speedup (reference/method, higher is better); memory is reported
-as a fraction of the reference's footprint (method/reference, lower is better), so
-that in both tables the number reads in the direction the quantity is wanted.
+as a fraction of the reference's footprint (method/reference, lower is better),
+so each quantity reads in its natural direction --- a larger speedup is better, a
+smaller footprint is better.
 The two protocols differ only in the plain convolutions' kernel size, so the
 wavelet methods are measured once and every ratio in every table shares that one
 denominator. Per-iteration dispersion is small: over all $504$

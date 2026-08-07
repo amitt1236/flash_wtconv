@@ -137,7 +137,7 @@ def build_tables(bench: dict, outdir: Path) -> None:
             for dtype in dtypes:
                 for metric, field, caption_kind in (
                     ("speedup", "latency_ms_mean", "Speedup"),
-                    ("memory", "peak_mem_mib", "Peak-memory reduction"),
+                    ("memory", "peak_mem_mib", "Peak memory"),
                 ):
                     # cell[level][method] = geometric mean over the (C, S) sweep
                     cell: dict[int, dict[str, float]] = defaultdict(dict)
@@ -161,7 +161,10 @@ def build_tables(bench: dict, outdir: Path) -> None:
                                     base = reference_row(protocol, mode, dtype, L, C, S)
                                     if base and r[field]:
                                         ratios.append(base[field] / r[field])
-                            cell[L][method] = geomean(ratios)
+                            g = geomean(ratios)
+                            # Memory reads as a fraction of the reference's
+                            # footprint, matching the combined tables.
+                            cell[L][method] = _invert(g) if metric == "memory" else g
 
                     if not any(cell[L] for L in levels):
                         continue
@@ -178,11 +181,12 @@ def _write_ratio_table(path: Path, cell, levels, methods, protocol, mode,
                  if protocol == "homogeneous"
                  else rf"WTConv at $k{{=}}{k}$ against plain convolutions at $k{{=}}{kd}$")
     mode_txt = "forward pass" if mode == "fwd" else "forward and backward pass"
-    unit = ("mean latency" if metric == "speedup" else "peak allocated memory")
+    unit = ("mean latency; higher is better" if metric == "speedup"
+            else "peak allocated memory as a fraction of the reference's; lower is better")
 
     lines = [PREAMBLE, r"\begin{table}[t]", r"\centering",
              rf"\caption{{{caption_kind} relative to the reference WTConv implementation "
-             rf"({unit}; higher is better), {mode_txt}, \texttt{{{dtype}}}. "
+             rf"({unit}), {mode_txt}, \texttt{{{dtype}}}. "
              rf"Protocol: {proto_txt}. Each entry is the geometric mean over the full "
              rf"sweep of channel counts and spatial resolutions.}}",
              rf"\label{{tab:{metric}-{protocol}-{mode}-{dtype}}}",
@@ -248,7 +252,21 @@ def _ratio_vs_reference(idx, axes, method, protocol, mode, dtype, L, field):
     return geomean(ratios)
 
 
-def _write_combined(path: Path, idx, axes, rows_spec, mode, field, caption, label) -> None:
+def _invert(v: float) -> float:
+    """Flip a reference/method ratio into method/reference, NaN-safe."""
+    if v is None or math.isnan(v) or v == 0:
+        return float("nan")
+    return 1.0 / v
+
+
+def _write_combined(path: Path, idx, axes, rows_spec, mode, field, caption, label,
+                    invert: bool = False) -> None:
+    """
+    `invert` flips every entry into method/reference. Latency is quoted as a
+    speedup (higher is better); peak memory is quoted as a fraction of the
+    reference's footprint (lower is better), which is the direction the
+    quantity is wanted in and the one the reporting convention states.
+    """
     levels, dtypes = axes["levels"], axes["dtypes"]
     lines = [PREAMBLE, r"\begin{table}[t]", r"\centering",
              rf"\caption{{{caption}}}", rf"\label{{{label}}}",
@@ -262,6 +280,8 @@ def _write_combined(path: Path, idx, axes, rows_spec, mode, field, caption, labe
         for i, dtype in enumerate(dtypes):
             vals = [_ratio_vs_reference(idx, axes, method, protocol, mode,
                                         dtype, L, field) for L in levels]
+            if invert:
+                vals = [_invert(v) for v in vals]
             lines.append((label_txt if i == 0 else "") + " & " + DTYPE_TEX[dtype]
                          + " & " + " & ".join(_fmt(v) + r"$\times$" for v in vals)
                          + r" \\")
@@ -340,19 +360,19 @@ def build_paper_tables(bench: dict, outdir: Path) -> None:
 
         _write_combined(
             outdir / "tab_memory.tex", idx, axes, rows_spec, "fwd_bwd", "peak_mem_mib",
-            r"Peak allocated memory over a training step relative to the reference "
-            r"WTConv ($1.00\times$; higher means the method needs less memory), same "
+            r"Peak allocated memory over a training step, as a fraction of what the "
+            r"reference WTConv allocates ($1.00\times$; \textbf{lower is better}), same "
             r"sweep as \Cref{tab:latency}. Measured as the CUDA allocator high-water "
             r"mark, not reserved memory. Fusion removes the per-level coefficient "
             r"tensors from the autograd tape, which is where the saving comes from.",
-            "tab:memory")
+            "tab:memory", invert=True)
 
     _write_combined(
         outdir / "tab_memory_inference.tex", idx, axes, rows_spec, "fwd", "peak_mem_mib",
-        r"Peak allocated memory for inference (forward only, no autograd tape) "
-        r"relative to the reference WTConv ($1.00\times$; higher means less memory), "
-        r"same sweep as \Cref{tab:latency}.",
-        "tab:memory-inference")
+        r"Peak allocated memory for inference (forward only, no autograd tape), as a "
+        r"fraction of what the reference WTConv allocates ($1.00\times$; "
+        r"\textbf{lower is better}), same sweep as \Cref{tab:latency}.",
+        "tab:memory-inference", invert=True)
 
     # Representative configuration: middle of the sweep, in absolute units.
     dtype = axes["dtypes"][0]
