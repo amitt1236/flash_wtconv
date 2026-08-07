@@ -36,29 +36,15 @@ placeholder, since submission mode never expands it.
 main.tex                  manuscript
 main.bib                  41 references, verified against DBLP/publisher records
 appendix_repro.tex        Appendix A — reproducibility, claim-to-evidence map
-appendix_backends.tex     Appendix C — Triton and Metal
 figures/fig_dataflow.tex  Fig 1  HBM dataflow, baseline vs fused (TikZ)
-results/*.tex             generated tables — do not edit by hand
+results/*.tex             generated tables and macros — do not edit by hand
 scripts/                  measurement harness
 ```
 
-The manuscript currently `\input`s only `figures/fig_dataflow.tex`,
-`results/tab_rfmatch.tex` and `results/tab_backends.tex`. The other generated
-fragments — `figures/fig_roofline.tex`, `figures/fig_convergence.tex`,
-`results/tab_context.tex`, `results/tab_memory.tex`,
-`results/tab_correctness.tex` — are kept because the harness regenerates them,
-but they belong to the Experiments and Portability sections that were dropped
-from `main.tex`, so nothing references them. Re-adding either section means
-re-adding the corresponding `\input`.
-
 ## Regenerating the numbers
 
-No number is typed into the manuscript. `results/*.tex` is generated, and the
-paper `\input`s it.
-
-Right now those tables come from `scripts/seed_from_report.py`, which encodes
-the original measurement campaign (RTX A6000 / M3 Pro / L40S). To replace them
-with fresh measurements on your own hardware:
+The tables under `results/` are generated; the prose in `main.tex` is written by
+hand against them.
 
 ```bash
 cd scripts
@@ -68,19 +54,38 @@ python make_tables.py --bench ../results/bench_cuda.json \
                       --correctness ../results/correctness.json
 ```
 
+`make_tables.py` also writes `results/macros.tex`, which the manuscript does not
+`\input`. It is a convenience: it carries the min/max over the level sweep of
+every ratio the prose quotes, so the hand-written sentences can be checked
+against the measurements without re-deriving them from the JSON.
+
+Kernel sizes are never hard-coded in the generator: it reads them from the
+benchmark JSON's recorded `args`, so a caption always describes the protocol
+that was actually measured.
+
 `make_tables.py` overwrites the same filenames, so the manuscript picks the new
 values up on the next `pdflatex`. It also emits `env.tex` (hardware/software
-versions, captured automatically) and `macros.tex` (headline numbers).
+versions, captured automatically).
 
-### What still needs a GPU run
-
-- **`results/tab_correctness.tex` is a placeholder.** Its structural rows are
-  exact and machine-independent; the numerical deviation columns are `---`
-  until `correctness.py` runs on a CUDA device. It is not currently `\input` by
-  the manuscript (see the layout note above).
+`results/bench_cuda_k3.json` is a retained earlier sweep at `k=3`, kept only as
+an ablation; the paper reports `k=5`, the kernel size WTConvNeXt uses.
 
 ## Scope note
 
-`bench.py` compares five methods: `depthwise`, `dense`, `reference` (the
-implementation of Finder et al.), `fused_cuda`, and `fused_triton`. Ratios are
+`bench.py` is CUDA-only and compares four methods: `depthwise`, `dense`,
+`reference` (the implementation of Finder et al.) and `fused_cuda`. Ratios are
 always taken against `reference`, so higher is faster.
+
+Two protocols:
+
+- **homogeneous** — every method at the same `k`, isolating the cost of the
+  wavelet machinery.
+- **dropin** — WTConv at `k=5` against plain convolutions at `k=7`, the
+  depthwise convolution WTConv is proposed to replace in a ConvNeXt block.
+  This is *not* a receptive-field match: WTConv at `k=5` over `L` levels spans
+  `5·2^L` ≥ 10 pixels, so the plain convolutions see strictly less context.
+  Table 3 of the manuscript states the gap.
+
+The wavelet methods are measured under `homogeneous` only — the protocols differ
+solely in the plain convolutions' kernel size — and every ratio is taken against
+that one denominator.

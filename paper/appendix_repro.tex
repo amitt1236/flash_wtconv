@@ -8,7 +8,6 @@ overwrites the tables in place.
 
 \begin{verbatim}
 python scripts/bench.py        --device cuda --protocol both --mode both \
-                               --methods depthwise,dense,reference,fused_cuda \
                                --out results/bench_cuda.json
 python scripts/correctness.py  --device cuda \
                                --out results/correctness.json
@@ -20,7 +19,10 @@ python scripts/make_tables.py  --bench results/bench_cuda.json \
 \texttt{scripts/common.py} holds the measurement harness and the weight
 synchronisation used by both entry points; \texttt{scripts/bench.py} sweeps the
 configuration grid; \texttt{scripts/correctness.py} performs the equivalence
-tests; \texttt{scripts/make\_tables.py} renders the tables.
+tests; \texttt{scripts/make\_tables.py} renders the tables. Kernel sizes are
+never hard-coded in the table generator: it reads them from the recorded
+arguments in the benchmark JSON, so the protocol described in a caption is
+always the protocol that was measured.
 
 \subsection{Measurement protocol}
 
@@ -28,7 +30,10 @@ tests; \texttt{scripts/make\_tables.py} renders the tables.
 time is measured rather than host-side launch time, and the distribution over
 iterations is retained rather than only its mean. Each configuration runs $20$
 warmup iterations --- enough to cover JIT compilation and
-cuDNN algorithm selection --- followed by $50$ timed iterations. We report the
+cuDNN algorithm selection --- followed by $50$ timed iterations. The device is first driven to a steady clock
+state; measured from idle, the smallest configurations are timed during clock
+ramp-up and their means inflate by up to $2\times$, which is enough to distort a
+geometric mean taken over the sweep. We report the
 geometric mean of per-configuration ratios over the sweep; the raw JSON also
 carries median, standard deviation and the $10$th/$90$th percentiles for every
 configuration, which we recommend inspecting before quoting any single figure.
@@ -64,13 +69,16 @@ in \texttt{fp32} and should not be expected.
 \subsection{Configuration grid}
 
 $C\in\{32,64,128\}$; $H=W\in\{128,256,512\}$; batch size $8$;
-$L\in\{1,\dots,5\}$; $k=3$ for WTConv and, under the homogeneous protocol, for
-the plain-convolution baselines; $k=7$ for the plain-convolution baselines under
-the receptive-field-matched protocol; \texttt{fp32} and \texttt{fp16} for the
-latency and memory sweep, with \texttt{bf16} additionally covered by the
-equivalence tests. Each of the two protocols is measured both for a forward pass
-and for a forward-and-backward step, giving the $864$ measurements reported in
-Section~\ref{sec:results}. Baselines: \emph{depthwise} is
+$L\in\{1,\dots,5\}$; $k=5$ for WTConv and, under the homogeneous
+protocol, for the plain-convolution baselines; $k=7$ for the
+plain-convolution baselines under the drop-in protocol; \texttt{fp32} and
+\texttt{fp16} for the latency and memory sweep, with \texttt{bf16} additionally
+covered by the equivalence tests. Each protocol is measured both for a forward
+pass and for a forward-and-backward step, giving the $504$
+measurements reported in Section~\ref{sec:results}. The wavelet methods do not
+depend on the protocol --- the two differ only in the kernel size handed to the
+plain convolutions --- so they are measured once, under the homogeneous
+protocol, and every reported ratio shares that denominator. Baselines: \emph{depthwise} is
 \verb|nn.Conv2d(C, C, k, groups=C, padding='same')| and \emph{dense} is
 \verb|nn.Conv2d(C, C, k, padding='same')|.
 
@@ -93,12 +101,12 @@ Claim & Evidence \\
 Haar analysis is self-inverse and self-adjoint & Proposition~\ref{prop:selfinverse}; verified exactly over the rationals by \texttt{correctness.py} \\
 Single-pass synthesis & Proposition~\ref{prop:bitindexed} \\
 Reference moves $7N+\tfrac{43}{3}N(1-4^{-L})$ elements & Per-primitive accounting, Section~\ref{sec:memorybound}, read off the reference implementation stage by stage \\
-Operator is bandwidth-bound & $I\in[0.44,0.89]$ FLOP/byte against $I^\star\approx50$, Section~\ref{sec:memorybound} \\
+Operator is bandwidth-bound & $I\in[1.62,1.63]$ FLOP/byte in \texttt{fp32} ($[3.23,3.27]$ in \texttt{fp16}) against $I^\star\approx50$, Section~\ref{sec:memorybound} \\
 Fusion is exact, not approximate & Each step is an algebraic identity; residuals reported by \texttt{correctness.py} in Table~\ref{tab:correctness} against the tolerances above \\
-Fused form moves $7N$ ($L{=}1$) to $8.27N$ elements & Per-stage accounting, Section~\ref{sec:prediction}; not converted into a predicted latency ratio \\
-Measured speedup & Tables~\ref{tab:latency} and~\ref{tab:latency-train}, against the reference and against plain convolutions at matched kernel size and matched receptive field \\
+Fused form moves $7.00N$ ($L{=}1$) to $8.33N$ elements & Per-stage accounting, Section~\ref{sec:prediction}; not converted into a predicted latency ratio \\
+Measured speedup & Tables~\ref{tab:latency} and~\ref{tab:latency-train}, against the reference and against plain convolutions at matched kernel size and at the drop-in kernel size \\
 Measured peak memory & Table~\ref{tab:memory} (training step) and Table~\ref{tab:memory-inference} (inference) \\
-Measured speedup exceeds the traffic ratio & Section~\ref{sec:results-traffic}: launch count and occupancy, not additional traffic removed \\
+WTConv's receptive field exceeds the baseline's & $5\cdot2^{L}$ against $7$, Table~\ref{tab:rf}; stated so the drop-in comparison is not read as a receptive-field match \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -110,4 +118,8 @@ no accuracy result connecting the fused kernels to a downstream task, and this
 paper reports no end-to-end training measurement: every reported ratio is
 layer-level. There is no \texttt{torch.compile} arm on either side. Timing uses a
 single resident input tensor, so no host-to-device transfer or data loading is
-included. Each platform is represented by one device.
+included. Each platform is represented by one device. The fused kernels are
+compiled with \verb|--use_fast_math|; the reassociation identities of
+Section~\ref{sec:method} are exact, but that flag additionally relaxes IEEE
+semantics within a kernel, so the residuals of Table~\ref{tab:correctness} are
+what we claim, rather than bit-identity with the reference.

@@ -3,7 +3,7 @@
 
 \begin{table}[t]
 \centering
-\caption{Peak allocated memory for inference (forward only, no autograd tape) as a fraction of the reference WTConv's footprint ($1.00\times$; \emph{lower is better}), same sweep as \Cref{tab:latency-train}.}
+\caption{Peak allocated memory for inference (forward only, no autograd tape) relative to the reference WTConv ($1.00\times$; higher means less memory), same sweep as \Cref{tab:latency}.}
 \label{tab:memory-inference}
 \begin{tabular}{llccccc}
 \toprule
@@ -11,23 +11,23 @@
 \cmidrule(lr){3-7}
  & & 1 & 2 & 3 & 4 & 5 \\
 \midrule
-Depthwise conv, $k{=}3$ & \texttt{fp32} & 0.41$\times$ & 0.28$\times$ & 0.28$\times$ & 0.28$\times$ & 0.29$\times$ \\
- & \texttt{fp16} & 0.65$\times$ & 0.44$\times$ & 0.45$\times$ & 0.45$\times$ & 0.45$\times$ \\
+Depthwise conv, $k{=}5$ & \texttt{fp32} & 2.39$\times$ & 3.47$\times$ & 3.39$\times$ & 3.37$\times$ & 3.36$\times$ \\
+ & \texttt{fp16} & 1.53$\times$ & 2.20$\times$ & 2.15$\times$ & 2.14$\times$ & 2.14$\times$ \\
 \addlinespace[2pt]
-Dense conv, $k{=}3$ & \texttt{fp32} & 0.42$\times$ & 0.29$\times$ & 0.29$\times$ & 0.29$\times$ & 0.29$\times$ \\
- & \texttt{fp16} & 0.64$\times$ & 0.44$\times$ & 0.45$\times$ & 0.45$\times$ & 0.45$\times$ \\
+Dense conv, $k{=}5$ & \texttt{fp32} & 2.03$\times$ & 2.96$\times$ & 2.89$\times$ & 2.87$\times$ & 2.87$\times$ \\
+ & \texttt{fp16} & 1.53$\times$ & 2.20$\times$ & 2.15$\times$ & 2.14$\times$ & 2.14$\times$ \\
 \addlinespace[2pt]
-Depthwise conv, $k{=}7$ & \texttt{fp32} & 0.56$\times$ & 0.38$\times$ & 0.39$\times$ & 0.39$\times$ & 0.39$\times$ \\
- & \texttt{fp16} & 0.65$\times$ & 0.44$\times$ & 0.45$\times$ & 0.45$\times$ & 0.45$\times$ \\
+Depthwise conv, $k{=}7$ & \texttt{fp32} & 1.78$\times$ & 2.59$\times$ & 2.53$\times$ & 2.51$\times$ & 2.51$\times$ \\
+ & \texttt{fp16} & 1.52$\times$ & 2.19$\times$ & 2.14$\times$ & 2.13$\times$ & 2.13$\times$ \\
 \addlinespace[2pt]
-Dense conv, $k{=}7$ & \texttt{fp32} & 0.59$\times$ & 0.40$\times$ & 0.41$\times$ & 0.41$\times$ & 0.41$\times$ \\
- & \texttt{fp16} & 0.64$\times$ & 0.44$\times$ & 0.45$\times$ & 0.45$\times$ & 0.45$\times$ \\
+Dense conv, $k{=}7$ & \texttt{fp32} & 1.69$\times$ & 2.46$\times$ & 2.40$\times$ & 2.38$\times$ & 2.38$\times$ \\
+ & \texttt{fp16} & 1.52$\times$ & 2.19$\times$ & 2.14$\times$ & 2.13$\times$ & 2.13$\times$ \\
 \addlinespace[2pt]
 WTConv, reference & \texttt{fp32} & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ \\
  & \texttt{fp16} & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ \\
 \addlinespace[2pt]
-WTConv, \textbf{fused} & \texttt{fp32} & 0.64$\times$ & 0.49$\times$ & 0.52$\times$ & 0.52$\times$ & 0.52$\times$ \\
- & \texttt{fp16} & 0.64$\times$ & 0.49$\times$ & 0.52$\times$ & 0.52$\times$ & 0.52$\times$ \\
+WTConv, \textbf{fused} & \texttt{fp32} & 1.55$\times$ & 2.01$\times$ & 1.91$\times$ & 1.88$\times$ & 1.88$\times$ \\
+ & \texttt{fp16} & 1.53$\times$ & 1.98$\times$ & 1.88$\times$ & 1.86$\times$ & 1.85$\times$ \\
 \addlinespace[2pt]
 \bottomrule
 \end{tabular}

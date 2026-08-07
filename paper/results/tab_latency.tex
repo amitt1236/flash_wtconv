@@ -3,7 +3,7 @@
 
 \begin{table}[t]
 \centering
-\caption{Forward latency of every method relative to the reference WTConv ($1.00\times$; higher is faster). WTConv runs at $k{=}3$ throughout; the plain convolutions appear both at the same kernel size and at $k{=}7$, which is the receptive-field-matched comparison a practitioner faces. Each entry is the geometric mean of per-configuration ratios over $C\in\{32,64,128\}$ and $H{=}W\in\{128,256,512\}$ at $B{=}8$.}
+\caption{Forward latency of every method relative to the reference WTConv ($1.00\times$; higher is faster). WTConv runs at $k{=}5$ throughout, the kernel size WTConvNeXt uses. The plain convolutions appear twice: at the same kernel size, which isolates the cost of the wavelet machinery, and at $k{=}7$, the depthwise convolution WTConv is proposed to replace in a ConvNeXt block. The latter is a drop-in comparison and not a receptive-field match: WTConv at $k{=}5$ over $L$ levels spans $5\cdot2^{L}$ pixels, so the plain convolutions see strictly less context. Each entry is the geometric mean of per-configuration ratios over $C\in\{32,64,128\}$ and $H{=}W\in\{128,256,512\}$ at $B{=}8$.}
 \label{tab:latency}
 \begin{tabular}{llccccc}
 \toprule
@@ -11,23 +11,23 @@
 \cmidrule(lr){3-7}
  & & 1 & 2 & 3 & 4 & 5 \\
 \midrule
-Depthwise conv, $k{=}3$ & \texttt{fp32} & 11.14$\times$ & 14.17$\times$ & 15.20$\times$ & 15.57$\times$ & 15.87$\times$ \\
- & \texttt{fp16} & 10.54$\times$ & 12.92$\times$ & 13.58$\times$ & 13.82$\times$ & 13.96$\times$ \\
+Depthwise conv, $k{=}5$ & \texttt{fp32} & 7.35$\times$ & 9.28$\times$ & 9.87$\times$ & 10.10$\times$ & 10.24$\times$ \\
+ & \texttt{fp16} & 9.79$\times$ & 11.95$\times$ & 12.54$\times$ & 12.75$\times$ & 12.89$\times$ \\
 \addlinespace[2pt]
-Dense conv, $k{=}3$ & \texttt{fp32} & 4.41$\times$ & 5.61$\times$ & 6.02$\times$ & 6.17$\times$ & 6.29$\times$ \\
- & \texttt{fp16} & 4.18$\times$ & 5.13$\times$ & 5.39$\times$ & 5.49$\times$ & 5.54$\times$ \\
+Dense conv, $k{=}5$ & \texttt{fp32} & 2.52$\times$ & 3.18$\times$ & 3.39$\times$ & 3.46$\times$ & 3.51$\times$ \\
+ & \texttt{fp16} & 2.72$\times$ & 3.32$\times$ & 3.48$\times$ & 3.54$\times$ & 3.58$\times$ \\
 \addlinespace[2pt]
-Depthwise conv, $k{=}7$ & \texttt{fp32} & 3.38$\times$ & 4.30$\times$ & 4.61$\times$ & 4.72$\times$ & 4.81$\times$ \\
- & \texttt{fp16} & 1.98$\times$ & 2.42$\times$ & 2.55$\times$ & 2.59$\times$ & 2.62$\times$ \\
+Depthwise conv, $k{=}7$ & \texttt{fp32} & 3.79$\times$ & 4.79$\times$ & 5.09$\times$ & 5.21$\times$ & 5.28$\times$ \\
+ & \texttt{fp16} & 2.05$\times$ & 2.50$\times$ & 2.62$\times$ & 2.66$\times$ & 2.70$\times$ \\
 \addlinespace[2pt]
-Dense conv, $k{=}7$ & \texttt{fp32} & 1.46$\times$ & 1.85$\times$ & 1.99$\times$ & 2.03$\times$ & 2.07$\times$ \\
- & \texttt{fp16} & 1.60$\times$ & 1.96$\times$ & 2.06$\times$ & 2.09$\times$ & 2.12$\times$ \\
+Dense conv, $k{=}7$ & \texttt{fp32} & 1.65$\times$ & 2.08$\times$ & 2.21$\times$ & 2.27$\times$ & 2.30$\times$ \\
+ & \texttt{fp16} & 1.66$\times$ & 2.02$\times$ & 2.12$\times$ & 2.16$\times$ & 2.18$\times$ \\
 \addlinespace[2pt]
 WTConv, reference & \texttt{fp32} & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ \\
  & \texttt{fp16} & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ \\
 \addlinespace[2pt]
-WTConv, \textbf{fused} & \texttt{fp32} & 4.48$\times$ & 5.06$\times$ & 5.24$\times$ & 5.28$\times$ & 5.32$\times$ \\
- & \texttt{fp16} & 4.40$\times$ & 4.81$\times$ & 4.84$\times$ & 4.82$\times$ & 4.77$\times$ \\
+WTConv, \textbf{fused} & \texttt{fp32} & 3.67$\times$ & 4.20$\times$ & 4.32$\times$ & 4.35$\times$ & 4.37$\times$ \\
+ & \texttt{fp16} & 3.38$\times$ & 3.60$\times$ & 3.60$\times$ & 3.57$\times$ & 3.53$\times$ \\
 \addlinespace[2pt]
 \bottomrule
 \end{tabular}

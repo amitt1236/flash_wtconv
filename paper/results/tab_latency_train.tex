@@ -3,7 +3,7 @@
 
 \begin{table}[t]
 \centering
-\caption{Latency of a full training step (forward and backward) relative to the reference WTConv ($1.00\times$; higher is faster), Forward latency of every method relative to the reference WTConv ($1.00\times$; higher is faster). WTConv runs at $k{=}3$ throughout; the plain convolutions appear both at the same kernel size and at $k{=}7$, which is the receptive-field-matched comparison a practitioner faces. Each entry is the geometric mean of per-configuration ratios over $C\in\{32,64,128\}$ and $H{=}W\in\{128,256,512\}$ at $B{=}8$.}
+\caption{Latency of a full training step (forward and backward) relative to the reference WTConv ($1.00\times$; higher is faster), same sweep and same conventions as \Cref{tab:latency}. The backward pass moves the same intermediates in the opposite direction, so the reformulation applies to it unchanged.}
 \label{tab:latency-train}
 \begin{tabular}{llccccc}
 \toprule
@@ -11,23 +11,23 @@
 \cmidrule(lr){3-7}
  & & 1 & 2 & 3 & 4 & 5 \\
 \midrule
-Depthwise conv, $k{=}3$ & \texttt{fp32} & 7.51$\times$ & 9.92$\times$ & 10.57$\times$ & 10.83$\times$ & 10.98$\times$ \\
- & \texttt{fp16} & 9.71$\times$ & 12.81$\times$ & 13.73$\times$ & 14.11$\times$ & 14.38$\times$ \\
+Depthwise conv, $k{=}5$ & \texttt{fp32} & 4.89$\times$ & 6.21$\times$ & 6.60$\times$ & 6.74$\times$ & 6.79$\times$ \\
+ & \texttt{fp16} & 6.28$\times$ & 8.12$\times$ & 8.67$\times$ & 8.90$\times$ & 9.07$\times$ \\
 \addlinespace[2pt]
-Dense conv, $k{=}3$ & \texttt{fp32} & 3.88$\times$ & 5.13$\times$ & 5.47$\times$ & 5.60$\times$ & 5.68$\times$ \\
- & \texttt{fp16} & 3.76$\times$ & 4.96$\times$ & 5.31$\times$ & 5.46$\times$ & 5.56$\times$ \\
+Dense conv, $k{=}5$ & \texttt{fp32} & 2.31$\times$ & 2.94$\times$ & 3.13$\times$ & 3.19$\times$ & 3.22$\times$ \\
+ & \texttt{fp16} & 2.50$\times$ & 3.23$\times$ & 3.45$\times$ & 3.54$\times$ & 3.61$\times$ \\
 \addlinespace[2pt]
-Depthwise conv, $k{=}7$ & \texttt{fp32} & 1.99$\times$ & 2.63$\times$ & 2.80$\times$ & 2.87$\times$ & 2.91$\times$ \\
- & \texttt{fp16} & 1.37$\times$ & 1.81$\times$ & 1.94$\times$ & 2.00$\times$ & 2.04$\times$ \\
+Depthwise conv, $k{=}7$ & \texttt{fp32} & 2.46$\times$ & 3.13$\times$ & 3.33$\times$ & 3.40$\times$ & 3.42$\times$ \\
+ & \texttt{fp16} & 1.53$\times$ & 1.97$\times$ & 2.11$\times$ & 2.16$\times$ & 2.20$\times$ \\
 \addlinespace[2pt]
-Dense conv, $k{=}7$ & \texttt{fp32} & 1.15$\times$ & 1.52$\times$ & 1.62$\times$ & 1.66$\times$ & 1.69$\times$ \\
- & \texttt{fp16} & 1.39$\times$ & 1.83$\times$ & 1.96$\times$ & 2.01$\times$ & 2.05$\times$ \\
+Dense conv, $k{=}7$ & \texttt{fp32} & 1.42$\times$ & 1.81$\times$ & 1.92$\times$ & 1.96$\times$ & 1.98$\times$ \\
+ & \texttt{fp16} & 1.53$\times$ & 1.98$\times$ & 2.12$\times$ & 2.17$\times$ & 2.22$\times$ \\
 \addlinespace[2pt]
 WTConv, reference & \texttt{fp32} & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ \\
  & \texttt{fp16} & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ \\
 \addlinespace[2pt]
-WTConv, \textbf{fused} & \texttt{fp32} & 3.86$\times$ & 4.50$\times$ & 4.63$\times$ & 4.67$\times$ & 4.68$\times$ \\
- & \texttt{fp16} & 3.31$\times$ & 3.82$\times$ & 3.93$\times$ & 3.94$\times$ & 3.94$\times$ \\
+WTConv, \textbf{fused} & \texttt{fp32} & 3.71$\times$ & 4.23$\times$ & 4.34$\times$ & 4.35$\times$ & 4.33$\times$ \\
+ & \texttt{fp16} & 2.68$\times$ & 3.02$\times$ & 3.08$\times$ & 3.09$\times$ & 3.08$\times$ \\
 \addlinespace[2pt]
 \bottomrule
 \end{tabular}

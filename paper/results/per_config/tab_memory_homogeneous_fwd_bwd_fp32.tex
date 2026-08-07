@@ -3,7 +3,7 @@
 
 \begin{table}[t]
 \centering
-\caption{Peak-memory reduction relative to the reference WTConv implementation (peak allocated memory; higher is better), forward and backward pass, \texttt{fp32}. Protocol: all methods at the same kernel size. Each entry is the geometric mean over the full sweep of channel counts and spatial resolutions.}
+\caption{Peak-memory reduction relative to the reference WTConv implementation (peak allocated memory; higher is better), forward and backward pass, \texttt{fp32}. Protocol: all methods at the same kernel size, $k{=}5$. Each entry is the geometric mean over the full sweep of channel counts and spatial resolutions.}
 \label{tab:memory-homogeneous-fwd_bwd-fp32}
 \begin{tabular}{lccccc}
 \toprule
@@ -11,11 +11,11 @@
 \cmidrule(lr){2-6}
  & 1 & 2 & 3 & 4 & 5 \\
 \midrule
-Depthwise & 1.59$\times$ & 2.32$\times$ & 2.32$\times$ & 2.32$\times$ & 2.32$\times$ \\
-Dense & 1.60$\times$ & 2.33$\times$ & 2.33$\times$ & 2.33$\times$ & 2.33$\times$ \\
+Depthwise & 1.59$\times$ & 2.30$\times$ & 2.30$\times$ & 2.30$\times$ & 2.30$\times$ \\
+Dense & 1.39$\times$ & 2.01$\times$ & 2.01$\times$ & 2.01$\times$ & 2.01$\times$ \\
 WTConv~\citep{finder2024wavelet} & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ \\
 \midrule
-\textbf{Fused (CUDA)} & 1.85$\times$ & 2.34$\times$ & 2.29$\times$ & 2.28$\times$ & 2.28$\times$ \\
+\textbf{Fused (CUDA)} & 1.83$\times$ & 2.31$\times$ & 2.26$\times$ & 2.25$\times$ & 2.24$\times$ \\
 \bottomrule
 \end{tabular}
 \end{table}

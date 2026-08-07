@@ -3,7 +3,7 @@
 
 \begin{table}[t]
 \centering
-\caption{Speedup relative to the reference WTConv implementation (mean latency; higher is better), forward pass, \texttt{fp32}. Protocol: all methods at the same kernel size. Each entry is the geometric mean over the full sweep of channel counts and spatial resolutions.}
+\caption{Speedup relative to the reference WTConv implementation (mean latency; higher is better), forward pass, \texttt{fp32}. Protocol: all methods at the same kernel size, $k{=}5$. Each entry is the geometric mean over the full sweep of channel counts and spatial resolutions.}
 \label{tab:speedup-homogeneous-fwd-fp32}
 \begin{tabular}{lccccc}
 \toprule
@@ -11,11 +11,11 @@
 \cmidrule(lr){2-6}
  & 1 & 2 & 3 & 4 & 5 \\
 \midrule
-Depthwise & 11.14$\times$ & 14.17$\times$ & 15.20$\times$ & 15.57$\times$ & 15.87$\times$ \\
-Dense & 4.41$\times$ & 5.61$\times$ & 6.02$\times$ & 6.17$\times$ & 6.29$\times$ \\
+Depthwise & 7.35$\times$ & 9.28$\times$ & 9.87$\times$ & 10.10$\times$ & 10.24$\times$ \\
+Dense & 2.52$\times$ & 3.18$\times$ & 3.39$\times$ & 3.46$\times$ & 3.51$\times$ \\
 WTConv~\citep{finder2024wavelet} & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ \\
 \midrule
-\textbf{Fused (CUDA)} & 4.48$\times$ & 5.06$\times$ & 5.24$\times$ & 5.28$\times$ & 5.32$\times$ \\
+\textbf{Fused (CUDA)} & 3.67$\times$ & 4.20$\times$ & 4.32$\times$ & 4.35$\times$ & 4.37$\times$ \\
 \bottomrule
 \end{tabular}
 \end{table}

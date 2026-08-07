@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Numerical-equivalence check between the reference WTConv2d of Finder et al.
-and the fused CUDA / Triton backends.
+and the fused CUDA backend.
 
 The fused kernels are not an approximation: they compute the same multilinear
 map with a different association order. In exact arithmetic the outputs are
@@ -164,15 +164,15 @@ def compare(method: str, C: int, K: int, L: int, S: int, B: int,
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--device", default="cuda")
+    p.add_argument("--device", default="cuda", choices=["cuda"])
     p.add_argument("--out", type=Path, required=True)
-    p.add_argument("--methods", default="fused_cuda,fused_triton")
+    p.add_argument("--methods", default="fused_cuda")
     p.add_argument("--dtypes", default="fp32,fp16,bf16")
     p.add_argument("--levels", default="1,2,3,4,5")
     p.add_argument("--channels", type=int, default=32)
     p.add_argument("--spatial", type=int, default=64)
     p.add_argument("--batch", type=int, default=2)
-    p.add_argument("--kernel-size", type=int, default=3)
+    p.add_argument("--kernel-size", type=int, default=5)
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 

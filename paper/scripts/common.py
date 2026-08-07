@@ -1,7 +1,7 @@
 """
 Shared harness for the Fast-WTConv paper: model construction, weight
 synchronisation between the reference and fused implementations, and
-CUDA-event based timing / peak-memory measurement.
+CUDA-event based timing / peak-memory measurement. CUDA only.
 
 Every number in the paper is produced by `bench.py` and `correctness.py`,
 both of which import this module. Nothing here is paper-specific beyond the
@@ -10,7 +10,6 @@ set of methods that get compared.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import statistics
@@ -53,11 +52,6 @@ def _fused_cuda_wtconv(C: int, K: int, levels: int) -> nn.Module:
     return CudaWTConv2d(C, C, kernel_size=K, wt_levels=levels, bias=True)
 
 
-def _fused_triton_wtconv(C: int, K: int, levels: int) -> nn.Module:
-    from wtconv_model.wtconv_triton import WTConv2d as TritonWTConv2d
-    return TritonWTConv2d(C, C, kernel_size=K, wt_levels=levels, bias=True)
-
-
 def _depthwise(C: int, K: int, levels: int) -> nn.Module:
     return nn.Conv2d(C, C, K, padding="same", groups=C, bias=True)
 
@@ -69,10 +63,12 @@ def _dense(C: int, K: int, levels: int) -> nn.Module:
 BUILDERS: dict[str, Callable[[int, int, int], nn.Module]] = {
     "reference": _reference_wtconv,
     "fused_cuda": _fused_cuda_wtconv,
-    "fused_triton": _fused_triton_wtconv,
     "depthwise": _depthwise,
     "dense": _dense,
 }
+
+# Methods that carry a wavelet decomposition, and therefore a level count.
+WAVELET_METHODS = ("reference", "fused_cuda")
 
 # Pretty names used in the LaTeX tables.
 DISPLAY = {
@@ -80,7 +76,6 @@ DISPLAY = {
     "dense": r"Dense $k$",
     "reference": r"WTConv (reference)",
     "fused_cuda": r"Fused (CUDA)",
-    "fused_triton": r"Fused (Triton)",
 }
 
 
@@ -101,18 +96,18 @@ def sync_weights(ref: nn.Module, fast: nn.Module) -> None:
         wavelet_convs[l].weight (4C, 1, K, K)
         wavelet_scale[l].weight (1, 4C, 1, 1)
 
-    Both fused backends expose the same tensors under different names; the
+    The fused backend exposes the same tensors under different names; the
     subband axis is packed identically (channel index = 4c + s with
     s in {LL, LH, HL, HH}), which we verify in `correctness.py`.
     """
     with torch.no_grad():
         # --- base path -------------------------------------------------------
-        if hasattr(fast, "base_conv"):                     # CUDA backend reuses nn.Conv2d
+        if hasattr(fast, "base_conv"):                     # nn.Conv2d-shaped backend
             fast.base_conv.weight.copy_(ref.base_conv.weight)
             if ref.base_conv.bias is not None and fast.base_conv.bias is not None:
                 fast.base_conv.bias.copy_(ref.base_conv.bias)
             fast.base_scale.weight.copy_(ref.base_scale.weight)
-        else:                                              # Triton backend: raw Parameters
+        else:                                              # raw-Parameter backend
             fast.base_weight.copy_(ref.base_conv.weight)
             if ref.base_conv.bias is not None and fast.base_bias is not None:
                 fast.base_bias.copy_(ref.base_conv.bias)
@@ -140,7 +135,7 @@ def build_pair(method: str, C: int, K: int, levels: int, dtype: torch.dtype,
 
     torch.manual_seed(seed)
     mod = BUILDERS[method](C, K, levels)
-    if method in ("fused_cuda", "fused_triton"):
+    if method in WAVELET_METHODS:
         sync_weights(ref, mod)
     return mod.to(device=device, dtype=dtype)
 
@@ -173,15 +168,11 @@ class Measurement:
 def _sync(device: str) -> None:
     if device == "cuda":
         torch.cuda.synchronize()
-    elif device == "mps":
-        torch.mps.synchronize()
 
 
 def _peak_mem_mib(device: str) -> float:
     if device == "cuda":
         return torch.cuda.max_memory_allocated() / (1024 ** 2)
-    if device == "mps":
-        return torch.mps.current_allocated_memory() / (1024 ** 2)
     return float("nan")
 
 
@@ -189,8 +180,6 @@ def _reset_peak(device: str) -> None:
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
         torch.cuda.empty_cache()
-    elif device == "mps":
-        torch.mps.empty_cache()
 
 
 def time_module(module: nn.Module, x: torch.Tensor, *, mode: str,
@@ -198,10 +187,9 @@ def time_module(module: nn.Module, x: torch.Tensor, *, mode: str,
     """
     Return (per-iteration latencies in ms, peak memory in MiB).
 
-    Timing uses CUDA events on NVIDIA (which measure device time and are immune
-    to host-side launch skew) and a synchronised wall clock elsewhere. Every
-    iteration is timed individually so the paper can report dispersion rather
-    than a single mean.
+    Timing uses CUDA events, which measure device time and are immune to
+    host-side launch skew. Every iteration is timed individually so the paper
+    can report dispersion rather than a single mean.
     """
     import time
 
@@ -219,7 +207,7 @@ def time_module(module: nn.Module, x: torch.Tensor, *, mode: str,
             with torch.no_grad():
                 module(x)
 
-    # --- warmup: JIT compilation, Triton autotuning, cuDNN algorithm search ---
+    # --- warmup: JIT compilation and cuDNN algorithm search ------------------
     for _ in range(warmup):
         step()
     _sync(device)
@@ -282,11 +270,6 @@ def environment() -> dict:
             "capability": ".".join(map(str, torch.cuda.get_device_capability(0))),
             "hbm_gib": round(torch.cuda.get_device_properties(0).total_memory / 1024 ** 3, 1),
         })
-    with contextlib.suppress(Exception):
-        import triton
-        env["triton"] = triton.__version__
-    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
-        env["mps"] = True
     return env
 
 

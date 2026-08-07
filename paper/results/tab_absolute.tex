@@ -9,12 +9,12 @@
 \toprule
 Method & Forward (ms) & Fwd+Bwd (ms) & Peak memory (MiB) \\
 \midrule
-Depthwise conv, $k{=}3$ & 0.655 & 2.887 & 576.0 \\
-Dense conv, $k{=}3$ & 1.659 & 5.666 & 770.3 \\
-Depthwise conv, $k{=}7$ & 2.226 & 11.028 & 576.0 \\
-Dense conv, $k{=}7$ & 4.651 & 15.763 & 797.7 \\
-WTConv, reference & 8.978 & 30.702 & 1376.1 \\
-WTConv, \textbf{fused} & 1.911 & 6.968 & 752.1 \\
+Depthwise conv, $k{=}5$ & 1.132 & 5.613 & 584.2 \\
+Dense conv, $k{=}5$ & 3.143 & 10.075 & 805.7 \\
+Depthwise conv, $k{=}7$ & 2.270 & 10.968 & 584.3 \\
+Dense conv, $k{=}7$ & 4.647 & 15.722 & 805.8 \\
+WTConv, reference & 10.075 & 36.355 & 1384.3 \\
+WTConv, \textbf{fused} & 2.613 & 8.739 & 760.5 \\
 \bottomrule
 \end{tabular}
 \end{table}
