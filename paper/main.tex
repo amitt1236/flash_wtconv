@@ -339,7 +339,8 @@ Traffic removed & $2.54\times$ & $2.55\times$ & $2.56\times$ & $2.56\times$ & $2
 \subsection{Setup}
 \label{sec:setup}
 
-All measurements are single-layer microbenchmarks. We sweep
+All measurements are single-layer microbenchmarks, except for the whole-network
+throughput of \autoref{sec:results-endtoend}, which states its own protocol. We sweep
 $C\in\{32,64,128\}$ and $H=W\in\{128,256,512\}$ at $B{=}8$ and
 $L\in\{1,\dots,5\}$, in \texttt{fp32} and \texttt{fp16}, over both protocols
 below and over both a forward pass and a full training step. Each configuration runs $20$ warmup iterations followed by $50$ iterations timed individually.
@@ -532,6 +533,55 @@ to the compulsory input plus output; the fused layer sits at $1.15$--$1.34\times
 the depthwise $7\times7$ convolution's footprint in \texttt{fp32} and
 $0.99$--$1.15\times$ in \texttt{fp16}, the residual being the filtered subband
 coefficients it must materialise between the analysis and synthesis passes.
+
+\subsection{End-to-end network throughput}
+\label{sec:results-endtoend}
+
+\input{results/tab_endtoend.tex}
+
+Every result so far isolates a single layer. The question a practitioner faces is
+what happens to a whole network, where the operator shares the runtime with
+pointwise convolutions, normalisations, and the classifier head, and where it is
+instantiated at the shapes an architecture actually uses rather than over the
+sweep of \autoref{sec:setup}. We therefore benchmark three networks end to end:
+ConvNeXt-T with its depthwise $7\times7$ blocks, and WTConvNeXt-T
+\citep{finder2024wavelet} --- the same architecture with every depthwise
+convolution replaced by WTConv at $k{=}5$, with $(5,4,3,2)$ levels across the four
+stages --- in both the reference and the fused implementation. All three are
+compiled with \texttt{torch.compile} and run at batch $64$ and $224\times224$ in
+\texttt{fp32} on the same RTX~A6000, with $20$ warmup and $50$ timed batches.
+\autoref{tab:endtoend} reports images per second. These are throughput
+measurements on randomly initialised weights: the reformulation is exact
+(\autoref{tab:correctness}), so accuracy is by construction unaffected and is not
+at issue here.
+
+The operator's cost is visible at network scale. Substituting the reference
+WTConv into ConvNeXt-T costs more than two thirds of the inference throughput
+($1382.6\to421.3$~img/s, $0.31\times$) and a third of the training throughput
+($248.8\to165.8$~img/s, $0.67\times$); a layer-level slowdown of this magnitude
+is not amortised away by the rest of the network. The fused implementation
+recovers most of it, reaching $2.31\times$ the reference's inference throughput
+and $1.59\times$ its training throughput. As in the microbenchmarks, the
+comparison against the baseline reverses over a training step and does not at
+inference: WTConvNeXt-T with the fused layer trains $1.06\times$ faster than
+ConvNeXt-T itself, so a $2$--$5$ level wavelet decomposition in every block is
+obtained at no cost in training throughput, whereas at inference it reaches
+$0.70\times$ ConvNeXt-T rather than parity. The direction of both gaps also
+matches \autoref{tab:latency-train,tab:latency}, where the reference's deficit
+against the depthwise $7\times7$ convolution is likewise larger at inference than
+over a training step.
+
+The end-to-end ratios are not, and should not be read as, the per-layer ratios of
+\autoref{tab:latency-train,tab:latency} carried through Amdahl's law. Two effects
+separate them. First, shapes: WTConvNeXt applies $5$ levels to a $56\times56$
+stage-one feature map, whose deepest subband is $2\times2$, and $2$ levels to a
+$7\times7$ one; these are coarser and smaller than anything in the
+$H{=}W\in\{128,256,512\}$ sweep, and both implementations lose occupancy there.
+Second, the compiler: \texttt{torch.compile} fuses the surrounding pointwise and
+normalisation work in all three networks, but the fused layer enters its graph as
+an opaque custom op, so the per-layer advantage is being spent against a baseline
+that has itself been optimised end to end. We report the measurement as it stands
+rather than adjust for either.
 
 %==============================================================================
 

@@ -1,0 +1,35 @@
+% Hand-maintained. Source: WTConv/wtconvnext/benchmark_throughput.py
+% Inference run:      BENCHMARK_TRAINING_STEP = False
+% Training-step run:  BENCHMARK_TRAINING_STEP = True
+% Both runs: batch 64, 224x224, fp32, torch.compile, 20 warmup + 50 timed batches,
+% CONVNEXT_KERNEL_SIZE = 7, WTCONVNEXT_KERNEL_SIZE = 5, wt_levels = (5, 4, 3, 2).
+
+\begin{table}[t]
+\centering
+\caption{End-to-end network throughput in images per second, higher is better,
+for a forward pass and for a full training step (forward, backward, and SGD
+update). ConvNeXt-T is the unmodified architecture with its depthwise $7\times7$
+blocks; WTConvNeXt-T is the same architecture with every depthwise convolution
+replaced by WTConv at $k{=}5$ with $(5,4,3,2)$ decomposition levels across the
+four stages, in the reference and in the fused implementation. The \emph{rel.}
+columns are throughput relative to ConvNeXt-T. Batch $64$ at $224\times224$ in
+\texttt{fp32}, all three networks compiled with \texttt{torch.compile}, $20$
+warmup and $50$ timed batches on the device of \autoref{sec:setup}. Unlike
+\autoref{tab:latency-train,tab:latency}, these are absolute measurements at a
+single shape rather than geometric means over a sweep.}
+\label{tab:endtoend}
+\begin{tabular}{lrcrc}
+\toprule
+\multirow{2}{*}{Model} & \multicolumn{2}{c}{Inference} & \multicolumn{2}{c}{Training step} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+ & img/s & rel. & img/s & rel. \\
+\midrule
+ConvNeXt-T (depthwise $k{=}7$) & $1382.6$ & $1.00\times$ & $248.8$ & $1.00\times$ \\
+WTConvNeXt-T, reference        & $421.3$  & $0.31\times$ & $165.8$ & $0.67\times$ \\
+WTConvNeXt-T, \textbf{fused}   & $973.5$  & $0.70\times$ & $263.9$ & $\mathbf{1.06\times}$ \\
+\addlinespace[2pt]
+\midrule
+Fused / reference & \multicolumn{2}{c}{$2.31\times$} & \multicolumn{2}{c}{$1.59\times$} \\
+\bottomrule
+\end{tabular}
+\end{table}

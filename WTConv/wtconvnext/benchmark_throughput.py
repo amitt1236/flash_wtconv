@@ -54,7 +54,7 @@ USE_TORCH_COMPILE = True  # Set to True to wrap models with torch.compile() - in
 CONVNEXT_KERNEL_SIZE = 7  # Kernel size for ConvNeXt depthwise convolutions (default: 7)
 WTCONVNEXT_KERNEL_SIZE = 5  # Kernel size for WTConvNeXt depthwise convolutions (default: 5)
 USE_CONV_MLP = False  # Use 1x1 conv in MLP
-BENCHMARK_TRAINING_STEP = True  # Set to True to benchmark a full training step (forward + backward + optimizer step) instead of inference only
+BENCHMARK_TRAINING_STEP = False  # Set to True to benchmark a full training step (forward + backward + optimizer step) instead of inference only
 
 
 # Lazy-loaded WTConv classes
