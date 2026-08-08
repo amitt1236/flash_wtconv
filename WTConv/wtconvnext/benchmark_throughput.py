@@ -19,7 +19,6 @@ import os
 import warnings
 import logging
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 os.environ["TRITON_CACHE_DIR"] = os.path.expanduser("~/.triton/cache")
 
 # Suppress torch.compile warnings
@@ -43,13 +42,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from wtconvnext import wtconvnext_tiny, wtconvnext_small, wtconvnext_base
-
+import torch._dynamo
+torch._dynamo.config.suppress_errors = True
 # =============================================================================
 # Configuration flags
 # =============================================================================
-BENCHMARK_TRITON = True  # Set to True to include Triton benchmarks
+BENCHMARK_TRITON = False  # Set to True to include Triton benchmarks
 BENCHMARK_CUDA = True  # Set to True to include CUDA benchmarks
-BENCHMARK_REGULAR = False  # Set to True to include regular/naive WTConvNeXt benchmarks
+BENCHMARK_REGULAR = True  # Set to True to include regular/naive WTConvNeXt benchmarks
 USE_TORCH_COMPILE = True  # Set to True to wrap models with torch.compile() - incompatible with custom Triton kernels
 CONVNEXT_KERNEL_SIZE = 7  # Kernel size for ConvNeXt depthwise convolutions (default: 7)
 WTCONVNEXT_KERNEL_SIZE = 5  # Kernel size for WTConvNeXt depthwise convolutions (default: 5)
@@ -103,7 +103,7 @@ def create_wtconvnext_triton(size='tiny'):
         return wtconvnext_base(pretrained=False, wtconv_class=WTConv2dTriton, conv_mlp=USE_CONV_MLP, kernel_sizes=WTCONVNEXT_KERNEL_SIZE)
 
 
-def benchmark_model(model, device, batch_size=64, warmup_batches=50, measure_batches=300):
+def benchmark_model(model, device, batch_size=64, warmup_batches=20, measure_batches=50):
     """
     Benchmark model throughput.
     
@@ -180,32 +180,32 @@ def main():
     if BENCHMARK_TRITON:
         models.append(('WTConvNeXt-T (Triton)', lambda: create_wtconvnext_triton('tiny'), False))
     
-    models.extend([
-        ('ConvNeXt-S', lambda: timm.create_model('convnext_small', pretrained=False, kernel_sizes=CONVNEXT_KERNEL_SIZE, conv_mlp=USE_CONV_MLP), True),
-    ])
+    # models.extend([
+    #     ('ConvNeXt-S', lambda: timm.create_model('convnext_small', pretrained=False, kernel_sizes=CONVNEXT_KERNEL_SIZE, conv_mlp=USE_CONV_MLP), True),
+    # ])
     
-    if BENCHMARK_REGULAR:
-        models.append(('WTConvNeXt-S', lambda: wtconvnext_small(pretrained=False, conv_mlp=USE_CONV_MLP, kernel_sizes=WTCONVNEXT_KERNEL_SIZE), False))
+    # if BENCHMARK_REGULAR:
+    #     models.append(('WTConvNeXt-S', lambda: wtconvnext_small(pretrained=False, conv_mlp=USE_CONV_MLP, kernel_sizes=WTCONVNEXT_KERNEL_SIZE), False))
     
-    if BENCHMARK_CUDA:
-        models.append(('WTConvNeXt-S (CUDA)', lambda: create_wtconvnext_cuda('small'), False))
+    # if BENCHMARK_CUDA:
+    #     models.append(('WTConvNeXt-S (CUDA)', lambda: create_wtconvnext_cuda('small'), False))
     
-    if BENCHMARK_TRITON:
-        models.append(('WTConvNeXt-S (Triton)', lambda: create_wtconvnext_triton('small'), False))
+    # if BENCHMARK_TRITON:
+    #     models.append(('WTConvNeXt-S (Triton)', lambda: create_wtconvnext_triton('small'), False))
     
-    # Base variants  
-    models.extend([
-        ('ConvNeXt-B', lambda: timm.create_model('convnext_base', pretrained=False, kernel_sizes=CONVNEXT_KERNEL_SIZE, conv_mlp=USE_CONV_MLP), True),
-    ])
+    # # Base variants  
+    # models.extend([
+    #     ('ConvNeXt-B', lambda: timm.create_model('convnext_base', pretrained=False, kernel_sizes=CONVNEXT_KERNEL_SIZE, conv_mlp=USE_CONV_MLP), True),
+    # ])
     
-    if BENCHMARK_REGULAR:
-        models.append(('WTConvNeXt-B', lambda: wtconvnext_base(pretrained=False, conv_mlp=USE_CONV_MLP, kernel_sizes=WTCONVNEXT_KERNEL_SIZE), False))
+    # if BENCHMARK_REGULAR:
+    #     models.append(('WTConvNeXt-B', lambda: wtconvnext_base(pretrained=False, conv_mlp=USE_CONV_MLP, kernel_sizes=WTCONVNEXT_KERNEL_SIZE), False))
     
-    if BENCHMARK_CUDA:
-        models.append(('WTConvNeXt-B (CUDA)', lambda: create_wtconvnext_cuda('base'), False))
+    # if BENCHMARK_CUDA:
+    #     models.append(('WTConvNeXt-B (CUDA)', lambda: create_wtconvnext_cuda('base'), False))
     
-    if BENCHMARK_TRITON:
-        models.append(('WTConvNeXt-B (Triton)', lambda: create_wtconvnext_triton('base'), False))
+    # if BENCHMARK_TRITON:
+    #     models.append(('WTConvNeXt-B (Triton)', lambda: create_wtconvnext_triton('base'), False))
     
     print("\n" + "=" * 55)
     print("Throughput Benchmark (images per second)")
