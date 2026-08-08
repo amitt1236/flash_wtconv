@@ -193,44 +193,47 @@ class WTMobileNet(nn.Module):
 SimpleCNN = WTMobileNet
 
 
-def copy_wtconv_weights(src_wtconv, dst_wtconv, src_class, dst_class):
-    """Copy WTConv weights from src (fused) to dst (naive) model.
-    
-    Handles different naming conventions between WTConv2d and WTConv2dNaive.
+def _wtconv_tensors(wtconv):
+    """Return (base_weight, base_bias, base_scale, wt_weights, wt_scales).
+
+    The fused WTConv2d keeps plain parameter tensors (base_weight / wt_weights),
+    since the scale is folded into them before every convolution; the naive one
+    keeps nn.Conv2d and _ScaleModule submodules.
     """
+    if hasattr(wtconv, 'base_weight'):  # fused
+        return (
+            wtconv.base_weight,
+            wtconv.base_bias,
+            wtconv.base_scale,
+            list(wtconv.wt_weights),
+            list(wtconv.wt_scales),
+        )
+    return (  # naive
+        wtconv.base_conv.weight,
+        wtconv.base_conv.bias,
+        wtconv.base_scale.weight,
+        [conv.weight for conv in wtconv.wavelet_convs],
+        [scale.weight for scale in wtconv.wavelet_scale],
+    )
+
+
+def copy_wtconv_weights(src_wtconv, dst_wtconv, src_class=None, dst_class=None):
+    """Copy WTConv weights from src to dst, in either naming convention."""
+    src_w, src_b, src_scale, src_wt_w, src_wt_s = _wtconv_tensors(src_wtconv)
+    dst_w, dst_b, dst_scale, dst_wt_w, dst_wt_s = _wtconv_tensors(dst_wtconv)
+
+    assert len(src_wt_w) == len(dst_wt_w), \
+        f"wt_levels mismatch: {len(src_wt_w)} vs {len(dst_wt_w)}"
+
     with torch.no_grad():
-        # Copy base conv
-        dst_wtconv.base_conv.weight.copy_(src_wtconv.base_conv.weight)
-        if hasattr(src_wtconv.base_conv, 'bias') and src_wtconv.base_conv.bias is not None:
-            if hasattr(dst_wtconv.base_conv, 'bias') and dst_wtconv.base_conv.bias is not None:
-                dst_wtconv.base_conv.bias.copy_(src_wtconv.base_conv.bias)
-        
-        # Copy base scale (different attribute names)
-        if hasattr(src_wtconv, 'base_scale'):
-            src_scale = src_wtconv.base_scale
-        else:
-            src_scale = src_wtconv.base_scale.weight
-            
-        if hasattr(dst_wtconv, 'base_scale'):
-            if isinstance(dst_wtconv.base_scale, nn.Parameter):
-                dst_wtconv.base_scale.copy_(src_scale)
-            else:
-                dst_wtconv.base_scale.weight.copy_(src_scale)
-        
-        # Copy wavelet convs and scales
-        depth = len(src_wtconv.wavelet_convs)
-        for level in range(depth):
-            dst_wtconv.wavelet_convs[level].weight.copy_(src_wtconv.wavelet_convs[level].weight)
-            # Handle different scale attribute names
-            if hasattr(src_wtconv, 'wavelet_scales'):
-                src_wscale = src_wtconv.wavelet_scales[level]
-            else:
-                src_wscale = src_wtconv.wavelet_scale[level].weight
-                
-            if hasattr(dst_wtconv, 'wavelet_scales'):
-                dst_wtconv.wavelet_scales[level].copy_(src_wscale)
-            else:
-                dst_wtconv.wavelet_scale[level].weight.copy_(src_wscale)
+        dst_w.copy_(src_w)
+        if src_b is not None and dst_b is not None:
+            dst_b.copy_(src_b)
+        dst_scale.copy_(src_scale)
+        for dst_lw, src_lw in zip(dst_wt_w, src_wt_w):
+            dst_lw.copy_(src_lw)
+        for dst_ls, src_ls in zip(dst_wt_s, src_wt_s):
+            dst_ls.copy_(src_ls)
 
 
 def copy_full_model_weights(src_model, dst_model, src_wtconv_class, dst_wtconv_class):
