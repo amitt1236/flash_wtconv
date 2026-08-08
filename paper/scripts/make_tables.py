@@ -40,16 +40,16 @@ DISPLAY = {
 ORDER = ["depthwise", "dense", "reference", "fused_cuda"]
 
 # Rows of the combined results tables: (method, protocol, label template). The
-# plain convolutions appear twice, once per protocol, so that a single table
+# depthwise convolution appears twice, once per protocol, so that a single table
 # carries both the matched-kernel-size and the drop-in-replacement baselines.
-# @K@ is the homogeneous kernel size, @KD@ the drop-in one; both come from the
-# benchmark JSON. Sentinels rather than str.format, because the labels are
-# LaTeX and full of braces.
+# Dense convolutions are measured but deliberately kept out of the paper tables:
+# WTConv replaces a depthwise convolution, so that is the only comparison the
+# manuscript makes. @K@ is the homogeneous kernel size, @KD@ the drop-in one;
+# both come from the benchmark JSON. Sentinels rather than str.format, because
+# the labels are LaTeX and full of braces.
 PAPER_ROWS = [
     ("depthwise", "homogeneous", r"Depthwise conv, $k{=}@K@$"),
-    ("dense", "homogeneous", r"Dense conv, $k{=}@K@$"),
     ("depthwise", "dropin", r"Depthwise conv, $k{=}@KD@$"),
-    ("dense", "dropin", r"Dense conv, $k{=}@KD@$"),
     ("reference", "homogeneous", r"WTConv, reference"),
     ("fused_cuda", "homogeneous", r"WTConv, \textbf{fused}"),
 ]

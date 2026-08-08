@@ -3,7 +3,7 @@
 
 \begin{table}[t]
 \centering
-\caption{Peak allocated memory over a training step, as a fraction of what the reference WTConv allocates ($1.00\times$; \textbf{lower is better}), same sweep as \Cref{tab:latency}. Measured as the CUDA allocator high-water mark, not reserved memory. Fusion removes the per-level coefficient tensors from the autograd tape, which is where the saving comes from.}
+\caption{Peak allocated memory over a training step, as a fraction of what the reference WTConv allocates (lower is better)}
 \label{tab:memory}
 \begin{tabular}{llccccc}
 \toprule
@@ -14,14 +14,8 @@
 Depthwise conv, $k{=}5$ & \texttt{fp32} & 0.63$\times$ & 0.44$\times$ & 0.44$\times$ & 0.44$\times$ & 0.44$\times$ \\
  & \texttt{fp16} & 0.73$\times$ & 0.51$\times$ & 0.51$\times$ & 0.51$\times$ & 0.51$\times$ \\
 \addlinespace[2pt]
-Dense conv, $k{=}5$ & \texttt{fp32} & 0.72$\times$ & 0.50$\times$ & 0.50$\times$ & 0.50$\times$ & 0.50$\times$ \\
- & \texttt{fp16} & 0.67$\times$ & 0.47$\times$ & 0.47$\times$ & 0.47$\times$ & 0.47$\times$ \\
-\addlinespace[2pt]
 Depthwise conv, $k{=}7$ & \texttt{fp32} & 0.63$\times$ & 0.44$\times$ & 0.44$\times$ & 0.44$\times$ & 0.44$\times$ \\
  & \texttt{fp16} & 0.73$\times$ & 0.51$\times$ & 0.51$\times$ & 0.51$\times$ & 0.51$\times$ \\
-\addlinespace[2pt]
-Dense conv, $k{=}7$ & \texttt{fp32} & 0.67$\times$ & 0.46$\times$ & 0.46$\times$ & 0.46$\times$ & 0.46$\times$ \\
- & \texttt{fp16} & 0.68$\times$ & 0.48$\times$ & 0.48$\times$ & 0.48$\times$ & 0.48$\times$ \\
 \addlinespace[2pt]
 WTConv, reference & \texttt{fp32} & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ \\
  & \texttt{fp16} & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ \\

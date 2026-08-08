@@ -1,0 +1,17 @@
+\backcite {luo2016erf}{{1}{1}{section.1}}
+\backcite {ding2022replknet}{{1}{1}{section.1}}
+\backcite {liu2023slak}{{1}{1}{section.1}}
+\backcite {finder2024wavelet}{{1}{1}{section.1}}
+\backcite {liu2022convnext}{{1}{1}{section.1}}
+\backcite {sandler2018mobilenetv2}{{1}{1}{section.1}}
+\backcite {finder2024wavelet}{{3}{1}{algorithm.1}}
+\backcite {williams2009roofline}{{3}{2.3}{subsection.2.3}}
+\backcite {ivanov2021datamovement}{{3}{2.4}{subsection.2.4}}
+\backcite {wahib2014kernelfusion}{{3}{2.4}{subsection.2.4}}
+\backcite {dao2022flashattention}{{3}{2.4}{subsection.2.4}}
+\backcite {dao2024flashattention2}{{3}{2.4}{subsection.2.4}}
+\backcite {ragankelley2013halide}{{4}{2.4}{subsection.2.4}}
+\backcite {chen2018tvm}{{4}{2.4}{subsection.2.4}}
+\backcite {sabne2020xla}{{4}{2.4}{subsection.2.4}}
+\backcite {liu2022convnext}{{7}{5.1}{section*.2}}
+\backcite {finder2024wavelet}{{9}{5.4}{subsection.5.4}}

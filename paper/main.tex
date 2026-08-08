@@ -345,7 +345,7 @@ Traffic removed & $2.54\times$ & $2.55\times$ & $2.56\times$ & $2.56\times$ & $2
 
 All measurements are single-layer microbenchmarks on an RTX~A6000, except the end-to-end networks in \autoref{sec:results-endtoend}. We sweep $C\in\{32,64,128\}$, $H=W\in\{128,256,512\}$ at $B{=}8$, and $L\in\{1,\dots,5\}$ in \texttt{fp32} and \texttt{fp16}. Timings average 50 iterations after 20 warmups.
 
-\paragraph{Baselines.} WTConv (reference and fused) always runs at $k{=}5$. We evaluate plain depthwise and dense convolutions under two protocols: \emph{matched} ($k{=}5$) to isolate wavelet overhead, and \emph{drop-in} ($k{=}7$) representing the standard ConvNeXt replacement \citep{liu2022convnext}. \autoref{tab:rf} details parameter counts and receptive fields.
+\paragraph{Baselines.} WTConv (reference and fused) always runs at $k{=}5$. We evaluate plain depthwise convolutions under two protocols: \emph{matched} ($k{=}5$) to isolate wavelet overhead, and \emph{drop-in} ($k{=}7$) representing the standard ConvNeXt replacement \citep{liu2022convnext}. \autoref{tab:rf} details parameter counts and receptive fields.
 
 \paragraph{Reporting.} Table values are the geometric mean over the $(C,H)$ sweep of the per-configuration ratio between the WTConv reference and the evaluated method. The reference is always $1.00\times$. Latency is reported as speedup (reference/method; higher is better) and memory as footprint fraction (method/reference; lower is better). \autoref{app:extra} verifies numerical agreement.
 \subsection{Layer latency}
@@ -358,10 +358,8 @@ All measurements are single-layer microbenchmarks on an RTX~A6000, except the en
 (forward and backward) latency. The reference operator loses to the convolution it
 replaces: the depthwise $7\times7$ convolution of a ConvNeXt block completes a
 training step $2.46$--$3.42\times$ faster in \texttt{fp32} and
-$1.53$--$2.20\times$ faster in \texttt{fp16}, and a dense $7\times7$ convolution,
-which does $C$ times the arithmetic, is still $1.42$--$1.98\times$ and
-$1.53$--$2.22\times$ faster respectively; at matched kernel size the margin widens
-to $4.89$--$6.79\times$ (\texttt{fp32}, depthwise $5\times5$). 
+$1.53$--$2.20\times$ faster in \texttt{fp16}; at matched kernel size the margin
+widens to $4.89$--$6.79\times$ (\texttt{fp32}, depthwise $5\times5$).
 
 Fusion reverses this. The fused layer is $3.71$--$4.35\times$ faster than the
 reference in \texttt{fp32} and $2.68$--$3.09\times$ in \texttt{fp16}. The ratio
@@ -371,15 +369,12 @@ the change from $L{=}4$ to $L{=}5$ is below $1\%$ in both precisions, as
 \autoref{eq:qratio} predicts. At every level and in both precisions this suffices
 to overturn the comparison above: against the depthwise $7\times7$ convolution it
 replaces, the fused layer trains $1.27$--$1.50\times$ faster in \texttt{fp32} and
-$1.40$--$1.76\times$ faster in \texttt{fp16}, and against the dense $7\times7$
-convolution $2.19$--$2.60\times$ and $1.39$--$1.75\times$ faster. It does not win
+$1.40$--$1.76\times$ faster in \texttt{fp16}. It does not win
 against a depthwise convolution at its \emph{own} kernel size, which remains
 $1.32$--$1.57\times$ faster in \texttt{fp32} and $2.34$--$2.94\times$ in
 \texttt{fp16}; that kernel moves $2N$ elements against the fused layer's
 $7N$--$8.33N$ and carries no decomposition at all, so the direction is expected.
-Against a dense $5\times5$ convolution the fused layer is $1.35$--$1.60\times$
-faster in \texttt{fp32} and lands between $7\%$ faster and $17\%$ slower in
-\texttt{fp16}. The speedup over the reference is \emph{smaller} in \texttt{fp16}
+The speedup over the reference is \emph{smaller} in \texttt{fp16}
 than in \texttt{fp32} because half precision halves the bytes moved by both implementations,
 and the reference, which moves more of them, benefits more.
 
@@ -388,14 +383,13 @@ and the reference, which moves more of them, benefits more.
 \autoref{tab:latency} reports forward-only latency. Against the reference the
 picture is unchanged: the fused layer is $3.67$--$4.37\times$ faster in
 \texttt{fp32} and $3.38$--$3.60\times$ in \texttt{fp16}, and the reference remains
-slower than every plain convolution in the table, including the depthwise
+slower than both plain convolutions in the table, including the depthwise
 $7\times7$ it is meant to replace, by $3.79$--$5.28\times$ and
 $2.05$--$2.70\times$. The comparison against the baselines, however, does not
 reverse as cleanly as over a training step. Against the depthwise $7\times7$
 convolution the fused layer wins in \texttt{fp16} ($1.31$--$1.65\times$) but not
-in \texttt{fp32}, where it sits at $0.83$--$0.97\times$; against the dense
-$7\times7$ convolution it wins in both precisions ($1.90$--$2.22\times$ and
-$1.62$--$2.04\times$). The \texttt{fp32} shortfall is structural rather than
+in \texttt{fp32}, where it sits at $0.83$--$0.97\times$. The \texttt{fp32}
+shortfall is structural rather than
 incidental: a forward pass allocates no autograd tape, so the part of the saving
 that comes from removing tape-retained subband tensors is unavailable, and what
 remains must cover a $7N$--$8.33N$ traffic budget against the $2N$ of a single
@@ -418,11 +412,10 @@ it holds $N$ elements, three times as many as all deeper levels combined
 ($\sum_{\ell\ge2}N_\ell\to N/3$). The mechanism is the one \autoref{sec:method}
 describes: every per-level subband tensor the reference writes to HBM is also
 retained by autograd until the backward pass, whereas the fused layer recomputes
-the Haar coefficients on chip. Against the plain convolutions, the fused layer's
+the Haar coefficients on chip. Against the plain convolution, the fused layer's
 training-step footprint is $0.87$--$1.02\times$ that of the depthwise $7\times7$
-convolution and $0.82$--$0.97\times$ that of the dense $7\times7$ one in
-\texttt{fp32}, and lower still in \texttt{fp16} ($0.76$--$0.89\times$ and
-$0.81$--$0.95\times$). An $L$-level decomposition therefore trains within a few
+convolution in \texttt{fp32}, and lower still in \texttt{fp16}
+($0.76$--$0.89\times$). An $L$-level decomposition therefore trains within a few
 percent of the memory budget of a single plain convolution, and below it in half
 precision.
 

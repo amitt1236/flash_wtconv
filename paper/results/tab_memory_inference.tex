@@ -3,7 +3,7 @@
 
 \begin{table}[t]
 \centering
-\caption{Peak allocated memory for inference (forward only, no autograd tape), as a fraction of what the reference WTConv allocates ($1.00\times$; \textbf{lower is better}), same sweep as \Cref{tab:latency}.}
+\caption{Peak allocated memory for inference, as a fraction of what the reference WTConv allocates (lower is better)}
 \label{tab:memory-inference}
 \begin{tabular}{llccccc}
 \toprule
@@ -14,13 +14,7 @@
 Depthwise conv, $k{=}5$ & \texttt{fp32} & 0.42$\times$ & 0.29$\times$ & 0.29$\times$ & 0.30$\times$ & 0.30$\times$ \\
  & \texttt{fp16} & 0.65$\times$ & 0.45$\times$ & 0.46$\times$ & 0.47$\times$ & 0.47$\times$ \\
 \addlinespace[2pt]
-Dense conv, $k{=}5$ & \texttt{fp32} & 0.49$\times$ & 0.34$\times$ & 0.35$\times$ & 0.35$\times$ & 0.35$\times$ \\
- & \texttt{fp16} & 0.65$\times$ & 0.45$\times$ & 0.46$\times$ & 0.47$\times$ & 0.47$\times$ \\
-\addlinespace[2pt]
 Depthwise conv, $k{=}7$ & \texttt{fp32} & 0.56$\times$ & 0.39$\times$ & 0.40$\times$ & 0.40$\times$ & 0.40$\times$ \\
- & \texttt{fp16} & 0.66$\times$ & 0.46$\times$ & 0.47$\times$ & 0.47$\times$ & 0.47$\times$ \\
-\addlinespace[2pt]
-Dense conv, $k{=}7$ & \texttt{fp32} & 0.59$\times$ & 0.41$\times$ & 0.42$\times$ & 0.42$\times$ & 0.42$\times$ \\
  & \texttt{fp16} & 0.66$\times$ & 0.46$\times$ & 0.47$\times$ & 0.47$\times$ & 0.47$\times$ \\
 \addlinespace[2pt]
 WTConv, reference & \texttt{fp32} & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ & 1.00$\times$ \\

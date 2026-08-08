@@ -18,7 +18,7 @@
 ]
 
 %============================ (a) BASELINE ============================
-\node[lbl, anchor=west] at (0,0.95) {(a) Baseline: every stage round-trips through HBM};
+\node[lbl, font=\normalsize\itshape ,anchor=west] at (0,0.95) {(a) Baseline: every stage round-trips through HBM};
 
 \node[hbm, anchor=west] (b0) at (0,0) {$\tX$\\[-1pt]\scriptsize $N_\ell$};
 \node[op,  right=4.5mm of b0]   (bop1) {\texttt{conv2d}\\[-2pt]\scriptsize WT};
@@ -34,7 +34,7 @@
   \draw[flow] (\a) -- (\b);
 
 %============================ (b) FUSED ============================
-\node[lbl, anchor=west] at (0,-1.35) {(b) Fused: one read, one pass --- the transform is recomputed in registers};
+\node[lbl, font=\normalsize\itshape,anchor=west] at (0,-1.35) {(b) Fused: one read, one pass --- the transform is recomputed in registers};
 
 % ghosts: intermediates that are never materialised
 \node[ghost] (g1) at (3.65,-2.25) {$\tY$};

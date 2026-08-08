@@ -1,0 +1,124 @@
+\begin{thebibliography}{14}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Chen et~al.(2018)Chen, Moreau, Jiang, Zheng, Yan, Shen, Cowan, Wang,
+  Hu, Ceze, Guestrin, and Krishnamurthy]{chen2018tvm}
+Tianqi Chen, Thierry Moreau, Ziheng Jiang, Lianmin Zheng, Eddie~Q. Yan, Haichen
+  Shen, Meghan Cowan, Leyuan Wang, Yuwei Hu, Luis Ceze, Carlos Guestrin, and
+  Arvind Krishnamurthy.
+\newblock {TVM}: An automated end-to-end optimizing compiler for deep learning.
+\newblock In \emph{13th USENIX Symposium on Operating Systems Design and
+  Implementation (OSDI)}, pp.\  578--594, 2018.
+
+\bibitem[Dao(2024)]{dao2024flashattention2}
+Tri Dao.
+\newblock {FlashAttention-2}: Faster attention with better parallelism and work
+  partitioning.
+\newblock In \emph{The Twelfth International Conference on Learning
+  Representations (ICLR)}, 2024.
+
+\bibitem[Dao et~al.(2022)Dao, Fu, Ermon, Rudra, and
+  R{\'e}]{dao2022flashattention}
+Tri Dao, Daniel~Y. Fu, Stefano Ermon, Atri Rudra, and Christopher R{\'e}.
+\newblock {FlashAttention}: Fast and memory-efficient exact attention with
+  {IO}-awareness.
+\newblock In \emph{Advances in Neural Information Processing Systems 35
+  (NeurIPS 2022)}, pp.\  16344--16359, 2022.
+
+\bibitem[Ding et~al.(2022)Ding, Zhang, Han, and Ding]{ding2022replknet}
+Xiaohan Ding, Xiangyu Zhang, Jungong Han, and Guiguang Ding.
+\newblock Scaling up your kernels to 31x31: Revisiting large kernel design in
+  {CNNs}.
+\newblock In \emph{Proceedings of the IEEE/CVF Conference on Computer Vision
+  and Pattern Recognition (CVPR)}, pp.\  11963--11975, 2022.
+
+\bibitem[Finder et~al.(2024)Finder, Amoyal, Treister, and
+  Freifeld]{finder2024wavelet}
+Shahaf~E. Finder, Roy Amoyal, Eran Treister, and Oren Freifeld.
+\newblock Wavelet convolutions for large receptive fields.
+\newblock In Ale{\v{s}} Leonardis, Elisa Ricci, Stefan Roth, Olga Russakovsky,
+  Torsten Sattler, and G{\"u}l Varol (eds.), \emph{Computer Vision -- ECCV
+  2024}, volume 15112 of \emph{Lecture Notes in Computer Science}, pp.\
+  363--380, Cham, 2024. Springer.
+\newblock \doi{10.1007/978-3-031-72949-2_21}.
+
+\bibitem[Ivanov et~al.(2021)Ivanov, Dryden, Ben-Nun, Li, and
+  Hoefler]{ivanov2021datamovement}
+Andrei Ivanov, Nikoli Dryden, Tal Ben-Nun, Shigang Li, and Torsten Hoefler.
+\newblock Data movement is all you need: A case study on optimizing
+  transformers.
+\newblock In \emph{Proceedings of Machine Learning and Systems (MLSys)},
+  volume~3, pp.\  711--732, 2021.
+
+\bibitem[Liu et~al.(2023)Liu, Chen, Chen, Chen, Xiao, Wu, K{\"a}rkk{\"a}inen,
+  Pechenizkiy, Mocanu, and Wang]{liu2023slak}
+Shiwei Liu, Tianlong Chen, Xiaohan Chen, Xuxi Chen, Qiao Xiao, Boqian Wu, Tommi
+  K{\"a}rkk{\"a}inen, Mykola Pechenizkiy, Decebal~Constantin Mocanu, and
+  Zhangyang Wang.
+\newblock More {ConvNets} in the 2020s: Scaling up kernels beyond 51x51 using
+  sparsity.
+\newblock In \emph{The Eleventh International Conference on Learning
+  Representations (ICLR)}, 2023.
+
+\bibitem[Liu et~al.(2022)Liu, Mao, Wu, Feichtenhofer, Darrell, and
+  Xie]{liu2022convnext}
+Zhuang Liu, Hanzi Mao, Chao-Yuan Wu, Christoph Feichtenhofer, Trevor Darrell,
+  and Saining Xie.
+\newblock A {ConvNet} for the 2020s.
+\newblock In \emph{Proceedings of the IEEE/CVF Conference on Computer Vision
+  and Pattern Recognition (CVPR)}, pp.\  11976--11986, 2022.
+
+\bibitem[Luo et~al.(2016)Luo, Li, Urtasun, and Zemel]{luo2016erf}
+Wenjie Luo, Yujia Li, Raquel Urtasun, and Richard Zemel.
+\newblock Understanding the effective receptive field in deep convolutional
+  neural networks.
+\newblock In \emph{Advances in Neural Information Processing Systems 29 (NIPS
+  2016)}, pp.\  4898--4906, 2016.
+
+\bibitem[Ragan-Kelley et~al.(2013)Ragan-Kelley, Barnes, Adams, Paris, Durand,
+  and Amarasinghe]{ragankelley2013halide}
+Jonathan Ragan-Kelley, Connelly Barnes, Andrew Adams, Sylvain Paris, Fr{\'e}do
+  Durand, and Saman Amarasinghe.
+\newblock Halide: A language and compiler for optimizing parallelism, locality,
+  and recomputation in image processing pipelines.
+\newblock In \emph{Proceedings of the 34th ACM SIGPLAN Conference on
+  Programming Language Design and Implementation (PLDI)}, pp.\  519--530, 2013.
+\newblock \doi{10.1145/2491956.2462176}.
+
+\bibitem[Sabne(2020)]{sabne2020xla}
+Amit Sabne.
+\newblock {XLA}: Compiling machine learning for peak performance.
+\newblock Google Research, 2020.
+\newblock URL
+  \url{https://research.google/pubs/xla-compiling-machine-learning-for-peak-performance/}.
+
+\bibitem[Sandler et~al.(2018)Sandler, Howard, Zhu, Zhmoginov, and
+  Chen]{sandler2018mobilenetv2}
+Mark Sandler, Andrew Howard, Menglong Zhu, Andrey Zhmoginov, and Liang-Chieh
+  Chen.
+\newblock {MobileNetV2}: Inverted residuals and linear bottlenecks.
+\newblock In \emph{Proceedings of the IEEE Conference on Computer Vision and
+  Pattern Recognition (CVPR)}, pp.\  4510--4520, 2018.
+
+\bibitem[Wahib \& Maruyama(2014)Wahib and Maruyama]{wahib2014kernelfusion}
+Mohamed Wahib and Naoya Maruyama.
+\newblock Scalable kernel fusion for memory-bound {GPU} applications.
+\newblock In \emph{SC '14: Proceedings of the International Conference for High
+  Performance Computing, Networking, Storage and Analysis}, pp.\  191--202,
+  2014.
+\newblock \doi{10.1109/SC.2014.21}.
+
+\bibitem[Williams et~al.(2009)Williams, Waterman, and
+  Patterson]{williams2009roofline}
+Samuel Williams, Andrew Waterman, and David Patterson.
+\newblock Roofline: An insightful visual performance model for multicore
+  architectures.
+\newblock \emph{Communications of the ACM}, 52\penalty0 (4):\penalty0 65--76,
+  2009.
+\newblock \doi{10.1145/1498765.1498785}.
+
+\end{thebibliography}
