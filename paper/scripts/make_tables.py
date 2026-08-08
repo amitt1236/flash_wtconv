@@ -389,13 +389,16 @@ def build_correctness(rep: dict, outdir: Path) -> None:
     lines = [PREAMBLE, r"\begin{table}[t]", r"\centering",
              r"\caption{Numerical agreement with the reference implementation. "
              r"Entries are maximum absolute deviation over the whole tensor, at "
-             r"$L$ decomposition levels, for the forward output and for every "
-             r"gradient the layer produces. The fused kernels compute the same "
+             r"$L$ decomposition levels, for the forward output and for the "
+             r"gradients with respect to the input, the level-$L$ depthwise weight "
+             r"and scale, and the base-path bias. Every parameter gradient the "
+             r"layer produces is checked; the level-$L$ pair is reported as "
+             r"representative. The fused kernels compute the same "
              r"multilinear map with a different association order, so the residual "
              r"is floating-point reassociation error alone.}",
-             r"\label{tab:correctness}", r"\begin{tabular}{llccccc}", r"\toprule",
+             r"\label{tab:correctness}", r"\begin{tabular}{llcccccc}", r"\toprule",
              r"Backend & dtype & $L$ & forward & $\nabla_{\!X}$ & $\nabla_{\!W}$ & "
-             r"$\nabla_{\!s}$ \\", r"\midrule"]
+             r"$\nabla_{\!s}$ & $\nabla_{\!b}$ \\", r"\midrule"]
 
     last = None
     for case in rep.get("cases", []):
@@ -416,6 +419,7 @@ def build_correctness(rep: dict, outdir: Path) -> None:
             rf"\texttt{{{dt}}}", str(L),
             cell("forward"), cell("grad_input"),
             cell(f"grad_wt_weight_{L - 1}"), cell(f"grad_wt_scale_{L - 1}"),
+            cell("grad_base_bias"),
         ]) + r" \\")
 
     lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}", ""]

@@ -85,9 +85,9 @@ Large receptive fields are important for modern convolutional networks, but obta
 
 Yet this advantage does not translate into execution speed. WTConv is deployed at $k{=}5$ --- the kernel size WTConvNeXt uses --- as a replacement for the $7\times7$ depthwise convolution of a ConvNeXt block. In that configuration the reference implementation is \emph{slower than the convolution it replaces}: over a full training step it trails the depthwise $7\times7$ baseline by $2.46$--$3.42\times$ in \texttt{fp32} and $1.53$--$2.20\times$ in \texttt{fp16}, and at inference by $3.79$--$5.28\times$ and $2.05$--$2.70\times$ respectively. This is not explained by arithmetic: at $k{=}5$ the layer performs $58N$--$69N$ multiply--accumulates against $49N$ for the $7\times7$ depthwise baseline, a difference far smaller than the measured gap. An operator that increases wall-clock latency by this much offers a poor trade-off whatever its parameter count; closing the gap is the primary objective of this work.
 
-We show that the discrepancy arises because FLOPs are the wrong cost model for this operator. The reference WTConv implementation has an arithmetic intensity of only $1.62$--$1.63$~FLOP/byte in \texttt{fp32}, placing it deep in the memory-bound regime on modern GPUs. Its execution is therefore dominated not by the cost of the Haar transform or the depthwise convolutions themselves, but by repeatedly materialising intermediate wavelet coefficients and reconstructions in high-bandwidth memory (HBM). An exact accounting shows that a forward evaluation moves $17.75N$--$21.32N$ tensor elements across the HBM boundary for an input containing $N$ elements.
+We show that the discrepancy arises because FLOPs are the wrong cost model for this operator. The reference WTConv implementation has an arithmetic intensity of only $1.62$--$1.63$~FLOP/byte in \texttt{fp32}, placing it deep in the memory-bound regime on modern GPUs. Its execution is therefore dominated not by the cost of the Haar transform or the depthwise convolutions themselves, but by repeatedly materialising intermediate wavelet coefficients and reconstructions in high-bandwidth memory (HBM). Under a tensor-materialization I/O model, a forward evaluation incurs $17.75N$--$21.32N$ element reads and writes to global memory for an input containing $N$ elements.
 
-This observation suggests a different optimization target: rather than reducing arithmetic, we reformulate WTConv so that mathematical intermediates need not become memory-resident intermediates. We exploit three properties of the operator. First, Haar analysis is a multiplication-free butterfly and can be recomputed on chip inside the depthwise convolution. Second, linearity of Haar synthesis allows the entire $L$-level reconstruction recursion to be written as a single closed-form sum whose signs and coefficient addresses are determined by bits of the output coordinate. Third, the learned per-channel scales can be folded into the convolution weights. Together, these transformations preserve the same mathematical operator while eliminating the large intermediate tensors responsible for the majority of its data movement. The resulting formulation reduces predicted HBM traffic by $2.54$--$2.56\times$ for $L=1,\ldots,5$.
+This observation suggests a different optimization target: rather than reducing arithmetic, we reformulate WTConv so that mathematical intermediates need not become memory-resident intermediates. We exploit three properties of the operator. First, Haar analysis is a multiplication-free butterfly and can be recomputed on chip inside the depthwise convolution. Second, linearity of Haar synthesis allows the entire $L$-level reconstruction recursion to be written as a single closed-form sum whose signs and coefficient addresses are determined by bits of the output coordinate. Third, the learned per-channel scales can be folded into the convolution weights. Together, these transformations preserve the same mathematical operator while eliminating the large intermediate tensors responsible for the majority of its data movement. The resulting formulation reduces modeled HBM traffic by $2.54$--$2.56\times$ for $L=1,\ldots,5$.
 
 We implement this formulation in CUDA and evaluate both inference and full training steps over a broad sweep of tensor shapes, decomposition levels, and precisions. For a full training step, the implementation is $3.71$--$4.35\times$ faster than the reference in \texttt{fp32} and $2.68$--$3.09\times$ faster in \texttt{fp16}, while using $1.83$--$2.31\times$ less peak memory. More importantly, the systems reformulation reverses the practical comparison that motivates the work: over a training step the optimized WTConv is $1.27$--$1.50\times$ faster in \texttt{fp32} and $1.40$--$1.76\times$ faster in \texttt{fp16} than the depthwise $7\times7$ convolution it is proposed to replace, at every decomposition level tested. Training is the regime in which the comparison matters most, since it is where the materialised intermediates are both written and re-traversed; at inference the reversal is complete in \texttt{fp16} but not in \texttt{fp32}, where the fused layer remains within $3$--$17\%$ of the depthwise baseline rather than ahead of it (\autoref{sec:results-latency-inference}).
 
@@ -276,17 +276,21 @@ By evaluating \autoref{eq:synthesis_closed_form} in a single pass, a GPU thread 
 
 The reference implementation applies learned per-channel scaling $s_c$ after convolution ($\tZ_c = s_c (\tX \dwconv \mW)_c$) as a standalone elementwise pass. At an arithmetic intensity of $\tfrac18$~FLOP/byte in \texttt{fp32} (one multiply per element read and written), this pass severely limits memory throughput.
 
-By the linearity of convolution, the scale factor can be folded directly into the depthwise weights:
+By the linearity of convolution, the scale factor is folded into the depthwise weights and, on the base path, into its bias:
 \begin{equation}
-\widetilde{\mW}_c = s_c \odot \mW_c.
+\widetilde{\mW}_c = s_c \odot \mW_c, \qquad \widetilde{b}_c = s_c\, b_c,
+\label{eq:fold}
 \end{equation}
-This allows $\tZ = \tX \dwconv \widetilde{\mW}$ to be computed in a single pass with zero extra runtime cost. The weight folding is performed on host memory with negligible cost $\mathcal{O}(C k^2)$. 
+so that $\tZ = \tX \dwconv \widetilde{\mW} + \widetilde{b}$ is computed in a single pass with zero extra runtime cost.
 
-During backpropagation, exact parameter gradients with respect to the unscaled weight $\mW_c$ and scale $s_c$ are efficiently recovered via:
+During backpropagation, exact parameter gradients with respect to the unscaled weight $\mW_c$, bias $b_c$, and scale $s_c$ are efficiently recovered via:
 \begin{equation}
-\frac{\partial\mathcal{L}}{\partial\mW_c} = s_c \, \frac{\partial\mathcal{L}}{\partial\widetilde{\mW}_c}, \qquad \frac{\partial\mathcal{L}}{\partial s_c} = \left\langle \frac{\partial\mathcal{L}}{\partial\widetilde{\mW}_c}, \, \mW_c \right\rangle.
+\frac{\partial\mathcal{L}}{\partial\mW_c} = s_c \, \frac{\partial\mathcal{L}}{\partial\widetilde{\mW}_c}, \qquad
+\frac{\partial\mathcal{L}}{\partial b_c} = s_c \, \frac{\partial\mathcal{L}}{\partial\widetilde{b}_c}, \qquad
+\frac{\partial\mathcal{L}}{\partial s_c} = \left\langle \frac{\partial\mathcal{L}}{\partial\widetilde{\mW}_c}, \, \mW_c \right\rangle + \frac{\partial\mathcal{L}}{\partial\widetilde{b}_c}\, b_c.
 \label{eq:foldgrad}
 \end{equation}
+$s_c$ enters both folds, so its gradient collects a term from each.
 
 \subsection{The resulting I/O cost}
 \label{sec:prediction}
@@ -339,271 +343,112 @@ Traffic removed & $2.54\times$ & $2.55\times$ & $2.56\times$ & $2.56\times$ & $2
 \subsection{Setup}
 \label{sec:setup}
 
-All measurements are single-layer microbenchmarks, except for the whole-network
-results of \autoref{sec:results-endtoend}, which state their own protocol. We sweep
-$C\in\{32,64,128\}$ and $H=W\in\{128,256,512\}$ at $B{=}8$ and
-$L\in\{1,\dots,5\}$, in \texttt{fp32} and \texttt{fp16}, over both protocols
-below and over both a forward pass and a full training step. Each configuration runs $20$ warmup iterations followed by $50$ iterations timed individually.
+All measurements are single-layer microbenchmarks on an RTX~A6000, except the end-to-end networks in \autoref{sec:results-endtoend}. We sweep $C\in\{32,64,128\}$, $H=W\in\{128,256,512\}$ at $B{=}8$, and $L\in\{1,\dots,5\}$ in \texttt{fp32} and \texttt{fp16}. Timings average 50 iterations after 20 warmups.
 
-\paragraph{Baselines.} WTConv always runs at $k{=}5$, in both the reference form
-of \autoref{alg:wtconv} and the fused form of \autoref{sec:method}. This is the
-kernel size WTConvNeXt uses, and it is the configuration in which the operator is
-actually deployed. The plain convolutions appear twice, under two protocols that
-answer two different questions. At \emph{matched kernel size} ($k{=}5$) they
-isolate the cost of the wavelet machinery itself: what does an $L$-level
-decomposition cost over a single $5\times5$ convolution? Under the
-\emph{drop-in} protocol ($k{=}7$) they are the comparison a practitioner actually
-faces, since WTConv is proposed as a replacement for the $7\times7$ depthwise
-convolution of a ConvNeXt block \citep{liu2022convnext}. We report the dense
-convolution at the same kernel size as well, but the depthwise one is the
-operator being displaced, and it is the comparison we lead with.
+\paragraph{Baselines.} WTConv (reference and fused) always runs at $k{=}5$. We evaluate plain depthwise and dense convolutions under two protocols: \emph{matched} ($k{=}5$) to isolate wavelet overhead, and \emph{drop-in} ($k{=}7$) representing the standard ConvNeXt replacement \citep{liu2022convnext}. \autoref{tab:rf} details parameter counts and receptive fields.
 
-\paragraph{The drop-in protocol is not a receptive-field match.} We are explicit
-about this because the comparison is easy to state too favourably in either
-direction. A WTConv layer at $k{=}5$ with $L$ levels spans $5\cdot2^{L}$ input
-pixels, from $10$ at $L{=}1$ to $160$ at $L{=}5$ (\autoref{tab:rf}), against $7$
-for the convolution it replaces. The baseline therefore sees strictly less
-context at every level, and the latency comparison is correspondingly
-conservative in WTConv's favour: we are asking the wavelet layer to beat a
-cheaper operator that does less. A convolution that genuinely matched WTConv's
-receptive field would need a $160\times160$ kernel at $L{=}5$, costing $25601$
-parameters per channel against WTConv's $547$, a factor of $47$; as a dense
-rather than depthwise kernel it would not be a practical operator at all. That
-gap is the reason WTConv exists. It is not what this paper measures --- we take
-the operator's utility as given and ask only what it costs to run.
-
-\begin{table}[t]
-\centering
-\caption{Receptive field and parameter count of WTConv at $k{=}5$, against the
-depthwise convolution it replaces and against the depthwise convolution that
-would actually match its receptive field. Parameters are per channel. The
-$k{=}7$ baseline is the operator in a ConvNeXt block and the one
-\autoref{tab:latency} compares against; it spans $7$ pixels at every level, so
-from $L{=}1$ onward WTConv is doing strictly more. Matching the receptive field
-with a plain kernel costs parameters quadratically where WTConv costs them
-linearly, which is the trade the operator exists to make.}
-\label{tab:rf}
-\begin{tabular}{lccccc}
-\toprule
-\multirow{2}{*}{Quantity} & \multicolumn{5}{c}{Decomposition levels $L$}\\
-\cmidrule(lr){2-6}
- & 1 & 2 & 3 & 4 & 5 \\
-\midrule
-WTConv receptive field ($k{=}5$)      & $10$  & $20$  & $40$   & $80$   & $160$ \\
-WTConv parameters / channel           & $131$ & $235$ & $339$  & $443$  & $547$ \\
-\addlinespace[2pt]
-Depthwise $k{=}7$ receptive field     & $7$   & $7$   & $7$    & $7$    & $7$ \\
-Depthwise $k{=}7$ parameters / channel & $50$  & $50$  & $50$   & $50$   & $50$ \\
-\addlinespace[2pt]
-RF-matched depthwise $k$              & $10$  & $20$  & $40$   & $80$   & $160$ \\
-RF-matched parameters / channel       & $101$ & $401$ & $1601$ & $6401$ & $25601$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\paragraph{Reporting convention.} Every entry in
-\autoref{tab:latency-train,tab:latency,tab:memory,tab:memory-inference} is the geometric mean, over the
-$(C,H)$ sweep, of the per-configuration ratio between the reference WTConv and
-the method in question, so the reference is $1.00\times$ by construction. Latency
-is reported as a speedup (reference/method, higher is better); memory is reported
-as a fraction of the reference's footprint (method/reference, lower is better),
-so each quantity reads in its natural direction --- a larger speedup is better, a
-smaller footprint is better.
-The two protocols differ only in the plain convolutions' kernel size, so the
-wavelet methods are measured once and every ratio in every table shares that one
-denominator. Per-iteration dispersion is small: over all $504$
-measurements the median $p_{10}$--$p_{90}$ spread is $1.1\%$ of the
-mean and the $95$th percentile is $4.7\%$, so the ratios below
-are not noise-limited. Reaching that required warming the device to a steady
-clock state before the first configuration; measured from idle, the smallest
-shapes are timed while the clocks are still ramping and their means inflate by up
-to $2\times$.
-
-\subsection{Training latency}
+\paragraph{Reporting.} Table values are the geometric mean over the $(C,H)$ sweep of the per-configuration ratio between the WTConv reference and the evaluated method. The reference is always $1.00\times$. Latency is reported as speedup (reference/method; higher is better) and memory as footprint fraction (method/reference; lower is better). \autoref{app:extra} verifies numerical agreement.
+\subsection{Layer latency}
 \label{sec:results-latency-train}
 
 \input{results/tab_latency_train.tex}
-
-\autoref{tab:latency-train} reports full training step (forward and backward) latency.
-
-\emph{The reference operator loses to the convolution it replaces.} The
-depthwise $7\times7$ convolution of a ConvNeXt block completes a training step
-$2.46$--$3.42\times$ faster than the reference WTConv in \texttt{fp32} and
-$1.53$--$2.20\times$ faster in \texttt{fp16}; a dense $7\times7$ convolution,
-which does $C$ times the arithmetic, is still $1.42$--$1.98\times$ and
-$1.53$--$2.22\times$ faster respectively. At matched kernel size the margin is
-wider again: a depthwise $5\times5$ convolution is $4.89$--$6.79\times$ faster
-in \texttt{fp32}. WTConv's parameter and receptive-field advantages are real, but
-in the reference implementation they are paid for in wall-clock time, which is
-the gap this paper set out to close.
-
-\emph{Fusion closes it.} The fused layer is $3.71$--$4.35\times$ faster than the
-reference in \texttt{fp32} and $2.68$--$3.09\times$ in \texttt{fp16}. The ratio
-grows with $L$ and then flattens, because deeper decompositions give the
-reference more intermediates to materialise while \autoref{eq:qfused} is nearly
-flat in $L$; the change from $L{=}4$ to $L{=}5$ is already below $1\%$ in both
-precisions, as \autoref{eq:qratio} predicts. This is enough to reverse the
-verdict of the previous paragraph at every level and in both precisions: against
-the depthwise $7\times7$ convolution it replaces, the fused layer now trains
-$1.27$--$1.50\times$ faster in \texttt{fp32} and $1.40$--$1.76\times$ faster in
-\texttt{fp16}, and against the dense $7\times7$ convolution $2.19$--$2.60\times$
-and $1.39$--$1.75\times$ faster. The one comparison it does not win is against a
-depthwise convolution at its \emph{own} kernel size, which remains
-$1.32$--$1.57\times$ faster in \texttt{fp32} and $2.34$--$2.94\times$ in
-\texttt{fp16}; that kernel moves $2N$ elements against the fused layer's
-$7N$--$8.33N$ and carries no decomposition at all, so this is the expected
-direction and not a defect. Against a \emph{dense} $5\times5$ convolution the
-fused layer is $1.35$--$1.60\times$ faster in \texttt{fp32}, and in \texttt{fp16}
-lands between $7\%$ faster and $17\%$ slower depending on the level.
-Notably the fused speedup over the reference is \emph{smaller} in \texttt{fp16}
-than in \texttt{fp32}: half precision halves the bytes moved by both arms, and
-the reference, which moves more of them, benefits more.
-
-
-\subsection{Inference latency}
-\label{sec:results-latency-inference}
-
 \input{results/tab_latency.tex}
 
-\autoref{tab:latency} reports forward-only latency, the regime in which the layer
-is deployed rather than trained. Against the reference the picture is unchanged:
-the fused layer is $3.67$--$4.37\times$ faster in \texttt{fp32} and
-$3.38$--$3.60\times$ in \texttt{fp16}. The reference remains slower than every
-plain convolution in the table, including the depthwise $7\times7$ it is meant to
-replace, by $3.79$--$5.28\times$ in \texttt{fp32} and $2.05$--$2.70\times$ in
-\texttt{fp16}.
+\paragraph{Training step.} \autoref{tab:latency-train} reports full training-step
+(forward and backward) latency. The reference operator loses to the convolution it
+replaces: the depthwise $7\times7$ convolution of a ConvNeXt block completes a
+training step $2.46$--$3.42\times$ faster in \texttt{fp32} and
+$1.53$--$2.20\times$ faster in \texttt{fp16}, and a dense $7\times7$ convolution,
+which does $C$ times the arithmetic, is still $1.42$--$1.98\times$ and
+$1.53$--$2.22\times$ faster respectively; at matched kernel size the margin widens
+to $4.89$--$6.79\times$ (\texttt{fp32}, depthwise $5\times5$). 
 
-The comparison against the baselines, however, does not reverse as cleanly as it
-does over a training step, and we state the exception plainly. Against the
-depthwise $7\times7$ convolution the fused layer wins in \texttt{fp16}
-($1.31$--$1.65\times$) but \emph{not} in \texttt{fp32}, where it sits at
-$0.83$--$0.97\times$, i.e.\ between $3\%$ and $17\%$ behind. Against the dense
+Fusion reverses this. The fused layer is $3.71$--$4.35\times$ faster than the
+reference in \texttt{fp32} and $2.68$--$3.09\times$ in \texttt{fp16}. The ratio
+grows with $L$ and then flattens, because deeper decompositions give the reference
+more intermediates to materialise while \autoref{eq:qfused} is nearly flat in $L$;
+the change from $L{=}4$ to $L{=}5$ is below $1\%$ in both precisions, as
+\autoref{eq:qratio} predicts. At every level and in both precisions this suffices
+to overturn the comparison above: against the depthwise $7\times7$ convolution it
+replaces, the fused layer trains $1.27$--$1.50\times$ faster in \texttt{fp32} and
+$1.40$--$1.76\times$ faster in \texttt{fp16}, and against the dense $7\times7$
+convolution $2.19$--$2.60\times$ and $1.39$--$1.75\times$ faster. It does not win
+against a depthwise convolution at its \emph{own} kernel size, which remains
+$1.32$--$1.57\times$ faster in \texttt{fp32} and $2.34$--$2.94\times$ in
+\texttt{fp16}; that kernel moves $2N$ elements against the fused layer's
+$7N$--$8.33N$ and carries no decomposition at all, so the direction is expected.
+Against a dense $5\times5$ convolution the fused layer is $1.35$--$1.60\times$
+faster in \texttt{fp32} and lands between $7\%$ faster and $17\%$ slower in
+\texttt{fp16}. The speedup over the reference is \emph{smaller} in \texttt{fp16}
+than in \texttt{fp32} because half precision halves the bytes moved by both implementations,
+and the reference, which moves more of them, benefits more.
+
+\paragraph{Inference.}
+\label{sec:results-latency-inference}
+\autoref{tab:latency} reports forward-only latency. Against the reference the
+picture is unchanged: the fused layer is $3.67$--$4.37\times$ faster in
+\texttt{fp32} and $3.38$--$3.60\times$ in \texttt{fp16}, and the reference remains
+slower than every plain convolution in the table, including the depthwise
+$7\times7$ it is meant to replace, by $3.79$--$5.28\times$ and
+$2.05$--$2.70\times$. The comparison against the baselines, however, does not
+reverse as cleanly as over a training step. Against the depthwise $7\times7$
+convolution the fused layer wins in \texttt{fp16} ($1.31$--$1.65\times$) but not
+in \texttt{fp32}, where it sits at $0.83$--$0.97\times$; against the dense
 $7\times7$ convolution it wins in both precisions ($1.90$--$2.22\times$ and
-$1.62$--$2.04\times$). The reason for the \texttt{fp32} shortfall is structural
-rather than incidental: a forward pass allocates no autograd tape, so the part of
-the saving that comes from removing tape-retained subband tensors is unavailable,
-and what remains must cover a $7N$--$8.33N$ traffic budget against the $2N$ of a
-single well-tuned vendor kernel. Over a training step both arms pay for the
-backward traversal and the fused layer's advantage reappears. We therefore claim
-the reversal for training, where the operator's cost actually binds, and report
-inference as it measures.
+$1.62$--$2.04\times$). The \texttt{fp32} shortfall is structural rather than
+incidental: a forward pass allocates no autograd tape, so the part of the saving
+that comes from removing tape-retained subband tensors is unavailable, and what
+remains must cover a $7N$--$8.33N$ traffic budget against the $2N$ of a single
+well-tuned vendor kernel. Over a training step both arms pay for the backward
+traversal and the advantage reappears. We therefore claim the reversal for
+training, where the operator's cost binds, and report inference as it measures.
 
-\subsection{Training memory}
+\subsection{Peak memory}
 \label{sec:results-memory}
 
 \input{results/tab_memory.tex}
-
-\autoref{tab:memory} reports peak allocated memory over a training step, as a
-fraction of what the reference WTConv allocates, so lower is better.
-The fused layer needs $0.43$--$0.55\times$ the memory of the reference (a
-$1.83$--$2.31\times$ reduction), and the saving is essentially flat in $L$ beyond $L{=}2$, because the
-dominant saved allocation is the level-1 coefficient tensor: it holds $N$
-elements, as many as the input and three times as many as all deeper levels
-combined ($\sum_{\ell\ge2}N_\ell\to N/3$). The mechanism is
-the one \autoref{sec:method} describes. Every per-level subband tensor the reference
-writes to HBM is also retained by autograd until the backward pass, whereas the
-fused layer recomputes the Haar coefficients on chip and keeps only the filtered
-coefficients it must.
-
-The comparison against the plain convolutions is the more interesting one. The
-fused layer's training-step footprint is $0.87$--$1.02\times$ that of the
-depthwise $7\times7$ convolution and $0.82$--$0.97\times$ that of the dense
-$7\times7$ one in \texttt{fp32}, and lower still in \texttt{fp16}
-($0.76$--$0.89\times$ and $0.81$--$0.95\times$). An $L$-level decomposition
-therefore trains within a few percent of the memory budget of a single plain
-convolution, and below it in half precision --- which is the practically
-relevant statement, since training memory, not inference memory, is what bounds
-batch size.
-
-\subsection{Inference memory}
-\label{sec:results-memory-inference}
-
 \input{results/tab_memory_inference.tex}
 
-\autoref{tab:memory-inference} is the inference counterpart of \autoref{tab:memory}:
-peak allocated memory for a forward pass with no autograd tape, on the same
-lower-is-better convention. The saving over the reference is smaller than in
-training (the fused layer sits at $0.50$--$0.65\times$ against
-$0.43$--$0.55\times$), which is the expected direction, since a large part of what
-fusion removes is tape-retained subband tensors that inference never allocates in
-the first place. What remains is the traffic-side saving of \autoref{eq:qfused}: the
-coefficient tensors that are never written at all. The plain convolutions are
-correspondingly harder to match here, since without a tape their footprint is close
-to the compulsory input plus output; the fused layer sits at $1.15$--$1.34\times$
-the depthwise $7\times7$ convolution's footprint in \texttt{fp32} and
+\paragraph{Training step.} \autoref{tab:memory} reports peak allocated memory over
+a training step as a fraction of what the reference WTConv allocates. The fused
+layer needs $0.43$--$0.55\times$ the memory of the reference (a
+$1.83$--$2.31\times$ reduction), and the saving is essentially flat in $L$ beyond
+$L{=}2$, because the dominant saved allocation is the level-1 coefficient tensor:
+it holds $N$ elements, three times as many as all deeper levels combined
+($\sum_{\ell\ge2}N_\ell\to N/3$). The mechanism is the one \autoref{sec:method}
+describes: every per-level subband tensor the reference writes to HBM is also
+retained by autograd until the backward pass, whereas the fused layer recomputes
+the Haar coefficients on chip. Against the plain convolutions, the fused layer's
+training-step footprint is $0.87$--$1.02\times$ that of the depthwise $7\times7$
+convolution and $0.82$--$0.97\times$ that of the dense $7\times7$ one in
+\texttt{fp32}, and lower still in \texttt{fp16} ($0.76$--$0.89\times$ and
+$0.81$--$0.95\times$). An $L$-level decomposition therefore trains within a few
+percent of the memory budget of a single plain convolution, and below it in half
+precision.
+
+\paragraph{Inference.}
+\label{sec:results-memory-inference}
+\autoref{tab:memory-inference} is the forward-only counterpart, with no autograd
+tape. The saving over the reference is smaller than in training
+($0.50$--$0.65\times$ against $0.43$--$0.55\times$), which is the expected
+direction, since a large part of what fusion removes is tape-retained subband
+tensors that inference never allocates in the first place; what remains is the
+traffic-side saving of \autoref{eq:qfused}. The plain convolutions are
+correspondingly harder to match, since without a tape their footprint is close to
+the compulsory input plus output: the fused layer sits at $1.15$--$1.34\times$ the
+depthwise $7\times7$ convolution's footprint in \texttt{fp32} and
 $0.99$--$1.15\times$ in \texttt{fp16}, the residual being the filtered subband
 coefficients it must materialise between the analysis and synthesis passes.
 
-\subsection{End-to-end network throughput and memory}
+\subsection{End-to-end networks}
 \label{sec:results-endtoend}
 
+To evaluate the operator at architectural scale, we benchmark ConvNeXt-T and WTConvNeXt-T \citep{finder2024wavelet} which substitutes depthwise convolutions for WTConv ($k{=}5$, $L{\in}\{5,4,3,2\}$) using \texttt{torch.compile} at batch $64$ and $224\times224$ resolution in \texttt{fp32} \autoref{tab:endtoend}. Because our reformulation is algebraically exact, accuracy is identical to the reference model. 
+
+The reference WTConv imposes a severe bottleneck, restricting the network to $30\%$ of ConvNeXt-T's inference throughput and $67\%$ of its training throughput. Our fused implementation effectively mitigates this, achieving $2.35\times$ and $1.58\times$ the reference's inference and training throughputs, respectively. Crucially, WTConvNeXt-T equipped with the fused layer trains $1.06\times$ faster than the baseline ConvNeXt-T, although inference throughput reaches only $0.71\times$ of the baseline.
+
+The fused formulation similarly reduces peak memory, cutting the reference WTConvNeXt-T's training and inference footprints to $0.79\times$ and $0.85\times$. This bounds the network's memory overhead over ConvNeXt-T to $1.10\times$ (training) and $1.26\times$ (inference).
 \input{results/tab_endtoend.tex}
-
-Every result so far isolates a single layer. The question a practitioner faces is
-what happens to a whole network, where the operator shares the runtime with
-pointwise convolutions, normalisations, and the classifier head, and where it is
-instantiated at the shapes an architecture actually uses rather than over the
-sweep of \autoref{sec:setup}. We therefore benchmark three networks end to end:
-ConvNeXt-T with its depthwise $7\times7$ blocks, and WTConvNeXt-T
-\citep{finder2024wavelet} --- the same architecture with every depthwise
-convolution replaced by WTConv at $k{=}5$, with $(5,4,3,2)$ levels across the four
-stages --- in both the reference and the fused implementation. All three are
-compiled with \texttt{torch.compile} and run at batch $64$ and $224\times224$ in
-\texttt{fp32} on the same RTX~A6000, with $20$ warmup and $50$ timed batches.
-\autoref{tab:endtoend} reports images per second and peak allocated memory, the
-latter measured over the timed iterations only so that it reflects a steady-state
-iteration rather than compilation transients. These are cost measurements on
-randomly initialised weights: the reformulation is exact
-(\autoref{tab:correctness}), so accuracy is by construction unaffected and is not
-at issue here.
-
-The operator's cost is visible at network scale. Substituting the reference
-WTConv into ConvNeXt-T costs more than two thirds of the inference throughput
-($1394.9\to420.7$~img/s, $0.30\times$) and nearly a third of the training
-throughput ($247.7\to166.3$~img/s, $0.67\times$); a layer-level slowdown of this
-magnitude is not amortised away by the rest of the network. The fused
-implementation recovers most of it, reaching $2.35\times$ the reference's
-inference throughput and $1.58\times$ its training throughput. As in the
-microbenchmarks, the comparison against the baseline reverses over a training
-step and does not at inference: WTConvNeXt-T with the fused layer trains
-$1.06\times$ faster than ConvNeXt-T itself, so a $2$--$5$ level wavelet
-decomposition in every block is obtained at no cost in training throughput,
-whereas at inference it reaches $0.71\times$ ConvNeXt-T rather than parity. The
-direction of both gaps also matches \autoref{tab:latency-train,tab:latency},
-where the reference's deficit against the depthwise $7\times7$ convolution is
-likewise larger at inference than over a training step.
-
-Peak memory behaves the same way, and it is the quantity that decides whether a
-substitution is affordable at a given batch size. The intermediates the reference
-materialises are visible network-wide: WTConvNeXt-T peaks at $1.49\times$
-ConvNeXt-T's inference footprint and $1.40\times$ its training footprint, the
-latter an extra $2.7$~GiB at batch $64$. The fused layer removes most of that
-excess, cutting the network's training peak to $0.79\times$ the reference's and
-its inference peak to $0.85\times$, which leaves it at $1.10\times$ and
-$1.26\times$ ConvNeXt-T's respective footprints. Almost none of the residual is
-parameters: WTConvNeXt-T carries $30.6$M against ConvNeXt-T's $28.6$M, so the
-extra weights and their gradients account for $15$~MiB of the $685$~MiB
-training-peak gap, and the rest is activations --- the quantity
-\autoref{sec:method} targets. The inference figure falls inside the per-layer
-range of \autoref{tab:memory-inference} ($1.15$--$1.34\times$ the depthwise
-$7\times7$ convolution); the training figure sits just above the per-layer range
-of \autoref{tab:memory} ($0.87$--$1.02\times$), which dilution by the untouched
-layers cannot explain, since that would move the ratio toward $1.00$ rather than
-past it. The shapes are the more likely cause, for the reason given next.
-
-The end-to-end ratios are not, and should not be read as, the per-layer ratios of
-\autoref{tab:latency-train,tab:latency,tab:memory,tab:memory-inference} carried
-through Amdahl's law. Two effects separate them. First, shapes: WTConvNeXt
-applies $5$ levels to a $56\times56$
-stage-one feature map, whose deepest subband is $2\times2$, and $2$ levels to a
-$7\times7$ one; these are coarser and smaller than anything in the
-$H{=}W\in\{128,256,512\}$ sweep, and both implementations lose occupancy and
-coefficient-tensor economy there. Second, the compiler: \texttt{torch.compile}
-fuses the surrounding pointwise and normalisation work in all three networks, and
-can elide intermediates in the two convolutional baselines, but the fused layer
-enters its graph as an opaque custom op; the per-layer advantage is therefore
-being spent against baselines that have themselves been optimised end to end. We
-report the measurements as they stand rather than adjust for either.
 
 %==============================================================================
 
@@ -628,15 +473,45 @@ This work reduces the time and energy required to evaluate an existing operator 
 \label{app:extra}
 
 Latency and peak memory, for both a training step and inference and under both
-baseline protocols of \autoref{sec:setup}, are reported in \autoref{sec:results}; this
-appendix carries the numerical-agreement table.
+baseline protocols of \autoref{sec:setup}, are reported in \autoref{sec:results};
+this appendix carries the receptive-field and numerical-agreement tables.
 
-\autoref{tab:correctness} quantifies the numerical agreement summarised in
+\begin{table}[h]
+\centering
+\caption{Receptive field and parameter count (per channel) of WTConv at $k{=}5$,
+against the depthwise convolution it replaces and the depthwise convolution that
+would match its receptive field. The $k{=}7$ baseline spans $7$ pixels at every
+level, so from $L{=}1$ onward WTConv covers strictly more; matching the receptive
+field with a plain kernel costs parameters quadratically where WTConv costs them
+linearly, which is the trade the operator exists to make.}
+\label{tab:rf}
+\begin{tabular}{lccccc}
+\toprule
+\multirow{2}{*}{Quantity} & \multicolumn{5}{c}{Decomposition levels $L$}\\
+\cmidrule(lr){2-6}
+ & 1 & 2 & 3 & 4 & 5 \\
+\midrule
+WTConv receptive field ($k{=}5$)      & $10$  & $20$  & $40$   & $80$   & $160$ \\
+WTConv parameters / channel           & $131$ & $235$ & $339$  & $443$  & $547$ \\
+\addlinespace[2pt]
+Depthwise $k{=}7$ receptive field     & $7$   & $7$   & $7$    & $7$    & $7$ \\
+Depthwise $k{=}7$ parameters / channel & $50$  & $50$  & $50$   & $50$   & $50$ \\
+\addlinespace[2pt]
+RF-matched depthwise $k$              & $10$  & $20$  & $40$   & $80$   & $160$ \\
+RF-matched parameters / channel       & $101$ & $401$ & $1601$ & $6401$ & $25601$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\autoref{tab:correctness} quantifies the numerical agreement referenced in
 \autoref{sec:setup}. The deviations are those of a $k^2$-term accumulation in the
 working precision and do not grow with $L$: the forward output and $\nabla_{\!X}$
 sit at one unit in the last place of the working format at every level, and the
 parameter gradients \emph{shrink} with depth because the level-$\ell$ weight
-gradient is a reduction over $4^{-(\ell-1)}$ as many terms.
+gradient is a reduction over $4^{-(\ell-1)}$ as many terms. The base-path bias
+gradient $\nabla_{\!b}$, which checks the bias fold of \autoref{eq:fold}, is a
+reduction over all $BHW$ positions at every level, so its deviation is set by the
+reduction width rather than by $L$.
 
 \input{results/tab_correctness.tex}
 

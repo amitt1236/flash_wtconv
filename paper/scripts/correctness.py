@@ -128,25 +128,36 @@ def compare(method: str, C: int, K: int, L: int, S: int, B: int,
     out = {"forward": _err(yf, yr), "grad_input": _err(xf.grad, xr.grad)}
 
     # --- parameter gradients, matched across the two naming schemes ----------
+    # The base branch is the only one carrying a bias, and the fused path folds
+    # the scale into it as well as into the weight, so grad_base_bias is a
+    # distinct check on the fold of Eq. (8) -- not implied by grad_base_weight.
     ref_params = {"base_weight": ref.base_conv.weight, "base_scale": ref.base_scale.weight}
+    if ref.base_conv.bias is not None:
+        ref_params["base_bias"] = ref.base_conv.bias
     for l in range(L):
         ref_params[f"wt_weight_{l}"] = ref.wavelet_convs[l].weight
         ref_params[f"wt_scale_{l}"] = ref.wavelet_scale[l].weight
 
     if hasattr(fast, "base_conv"):
         fast_params = {"base_weight": fast.base_conv.weight, "base_scale": fast.base_scale.weight}
+        if fast.base_conv.bias is not None:
+            fast_params["base_bias"] = fast.base_conv.bias
         for l in range(L):
             fast_params[f"wt_weight_{l}"] = fast.wavelet_convs[l].weight
             fast_params[f"wt_scale_{l}"] = fast.wavelet_scale[l].weight
     else:
         fast_params = {"base_weight": fast.base_weight, "base_scale": fast.base_scale}
+        if getattr(fast, "base_bias", None) is not None:
+            fast_params["base_bias"] = fast.base_bias
         for l in range(L):
             fast_params[f"wt_weight_{l}"] = fast.wt_weights[l]
             fast_params[f"wt_scale_{l}"] = fast.wt_scales[l]
 
     for name, rp in ref_params.items():
-        fp = fast_params[name]
-        if rp.grad is None or fp.grad is None:
+        fp = fast_params.get(name)
+        if fp is None:
+            out[f"grad_{name}"] = {"missing": True, "ref_none": False, "fast_none": True}
+        elif rp.grad is None or fp.grad is None:
             out[f"grad_{name}"] = {"missing": True,
                                    "ref_none": rp.grad is None, "fast_none": fp.grad is None}
         else:
