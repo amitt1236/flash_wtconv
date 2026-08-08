@@ -1,7 +1,8 @@
 """
-Throughput Benchmark: ConvNeXt vs WTConvNeXt
+Throughput and Peak Memory Benchmark: ConvNeXt vs WTConvNeXt
 
-Measures inference throughput in images per second for:
+Measures inference throughput in images per second, and peak allocated GPU
+memory over the timed iterations, for:
 - ConvNeXt-T/S/B (from timm)
 - WTConvNeXt-T/S/B (original naive implementation)
 - WTConvNeXt-T/S/B with CUDA kernels
@@ -106,7 +107,12 @@ def create_wtconvnext_triton(size='tiny'):
 
 def benchmark_model(model, device, batch_size=64, warmup_batches=20, measure_batches=50, training_step=False):
     """
-    Benchmark model throughput.
+    Benchmark model throughput and peak GPU memory.
+
+    Peak memory is measured over the timed iterations only: the counter is reset
+    after warmup, so it reflects a steady-state iteration and excludes any
+    transient allocations made while torch.compile traces the model. Weights and
+    the input batch are already resident at that point and are therefore included.
 
     Args:
         model: PyTorch model to benchmark
@@ -118,7 +124,8 @@ def benchmark_model(model, device, batch_size=64, warmup_batches=20, measure_bat
             optimizer step) instead of inference-only forward passes
 
     Returns:
-        float: Throughput in images per second
+        tuple[float, float]: Throughput in images per second, and peak allocated
+            memory in MiB
     """
     model = model.to(device)
 
@@ -150,6 +157,10 @@ def benchmark_model(model, device, batch_size=64, warmup_batches=20, measure_bat
         # Synchronize before timing
         torch.cuda.synchronize()
 
+        # Track peak memory over the timed iterations only
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+
         # Create CUDA events for timing
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
@@ -174,6 +185,10 @@ def benchmark_model(model, device, batch_size=64, warmup_batches=20, measure_bat
         # Synchronize before timing
         torch.cuda.synchronize()
 
+        # Track peak memory over the timed iterations only
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+
         # Create CUDA events for timing
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
@@ -190,11 +205,14 @@ def benchmark_model(model, device, batch_size=64, warmup_batches=20, measure_bat
     elapsed_ms = start_event.elapsed_time(end_event)
     elapsed_sec = elapsed_ms / 1000.0
 
+    # Peak allocated memory over the timed iterations
+    peak_mem_mib = torch.cuda.max_memory_allocated() / 1024 / 1024
+
     # Calculate throughput
     total_images = measure_batches * batch_size
     throughput = total_images / elapsed_sec
 
-    return throughput
+    return throughput, peak_mem_mib
 
 
 def main():
@@ -242,16 +260,18 @@ def main():
     # if BENCHMARK_TRITON:
     #     models.append(('WTConvNeXt-B (Triton)', lambda: create_wtconvnext_triton('base'), False))
     
-    print("\n" + "=" * 55)
-    print("Throughput Benchmark (images per second)")
-    print("=" * 55)
-    print(f"\n{'Model':<25} {'Images/sec':>15}")
-    print("-" * 42)
-    
+    mode = "training step" if BENCHMARK_TRAINING_STEP else "inference"
+    print("\n" + "=" * 70)
+    print(f"Throughput and Peak Memory Benchmark ({mode})")
+    print("=" * 70)
+    print(f"\n{'Model':<25} {'Images/sec':>20} {'Peak Mem (MiB)':>20}")
+    print("-" * 67)
+
     results = []
     baseline_throughput = None
+    baseline_memory = None
     current_size = None
-    
+
     for name, model_factory, is_baseline in models:
         # Detect size change for grouping
         if 'ConvNeXt-T' in name and 'WT' not in name:
@@ -262,19 +282,23 @@ def main():
             current_size = 'B'
 
         model = model_factory()
-        throughput = benchmark_model(model, device, training_step=BENCHMARK_TRAINING_STEP)
-        results.append((name, throughput, is_baseline))
-        
+        throughput, peak_mem = benchmark_model(model, device, training_step=BENCHMARK_TRAINING_STEP)
+        results.append((name, throughput, peak_mem, is_baseline))
+
         if is_baseline:
             baseline_throughput = throughput
-        
-        # Calculate ratio if we have a baseline
-        if baseline_throughput and not is_baseline:
-            ratio = throughput / baseline_throughput * 100
-            print(f"{name:<25} {throughput:>10.2f}  ({ratio:>5.1f}%)")
-        else:
-            print(f"{name:<25} {throughput:>10.2f}")
-        
+            baseline_memory = peak_mem
+
+        # Report absolute values, plus a ratio against the baseline where we have
+        # one. Higher is better for throughput, lower is better for memory.
+        thr_pct = mem_pct = ''
+        if not is_baseline:
+            if baseline_throughput:
+                thr_pct = f"({throughput / baseline_throughput * 100:5.1f}%)"
+            if baseline_memory:
+                mem_pct = f"({peak_mem / baseline_memory * 100:5.1f}%)"
+        print(f"{name:<25} {throughput:>10.2f} {thr_pct:>9} {peak_mem:>10.1f} {mem_pct:>9}")
+
         # Free memory
         del model
         torch.cuda.empty_cache()
@@ -285,23 +309,27 @@ def main():
             (BENCHMARK_TRITON and 'Triton' in name)
         )
         if is_last_in_group:
-            print("-" * 42)
-    
-    print("\n" + "=" * 55)
+            print("-" * 67)
+
+    print("\n" + "=" * 70)
     print("Summary: Implementation Comparison by Model Size")
-    print("=" * 55)
-    
+    print("=" * 70)
+
     # Group results by size
     for size in ['T', 'S', 'B']:
         convnext = next((r for r in results if r[0] == f'ConvNeXt-{size}'), None)
         if convnext:
             base_throughput = convnext[1]
-            print(f"\n{size} variants (baseline: ConvNeXt-{size} = {base_throughput:.2f} img/sec)")
-            
-            for name, throughput, _ in results:
+            base_memory = convnext[2]
+            print(f"\n{size} variants (baseline: ConvNeXt-{size} = "
+                  f"{base_throughput:.2f} img/sec, {base_memory:.1f} MiB)")
+
+            for name, throughput, peak_mem, _ in results:
                 if f'WTConvNeXt-{size}' in name and throughput > 0:
-                    ratio = throughput / base_throughput * 100
-                    print(f"  {name:<25}: {throughput:>8.2f} img/sec ({ratio:>5.1f}%)")
+                    thr_ratio = throughput / base_throughput * 100
+                    mem_ratio = peak_mem / base_memory * 100
+                    print(f"  {name:<25}: {throughput:>8.2f} img/sec ({thr_ratio:>5.1f}%)"
+                          f" | {peak_mem:>8.1f} MiB ({mem_ratio:>5.1f}%)")
 
 
 if __name__ == '__main__':

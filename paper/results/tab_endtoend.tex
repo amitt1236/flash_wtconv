@@ -3,33 +3,41 @@
 % Training-step run:  BENCHMARK_TRAINING_STEP = True
 % Both runs: batch 64, 224x224, fp32, torch.compile, 20 warmup + 50 timed batches,
 % CONVNEXT_KERNEL_SIZE = 7, WTCONVNEXT_KERNEL_SIZE = 5, wt_levels = (5, 4, 3, 2).
+% Peak memory is torch.cuda.max_memory_allocated() over the timed iterations only
+% (counter reset after warmup, so torch.compile tracing is excluded).
 
 \begin{table}[t]
 \centering
-\caption{End-to-end network throughput in images per second, higher is better,
-for a forward pass and for a full training step (forward, backward, and SGD
-update). ConvNeXt-T is the unmodified architecture with its depthwise $7\times7$
-blocks; WTConvNeXt-T is the same architecture with every depthwise convolution
-replaced by WTConv at $k{=}5$ with $(5,4,3,2)$ decomposition levels across the
-four stages, in the reference and in the fused implementation. The \emph{rel.}
-columns are throughput relative to ConvNeXt-T. Batch $64$ at $224\times224$ in
-\texttt{fp32}, all three networks compiled with \texttt{torch.compile}, $20$
-warmup and $50$ timed batches on the device of \autoref{sec:setup}. Unlike
-\autoref{tab:latency-train,tab:latency}, these are absolute measurements at a
-single shape rather than geometric means over a sweep.}
+\caption{End-to-end network throughput and peak allocated GPU memory, for a
+forward pass and for a full training step (forward, backward, and SGD update).
+ConvNeXt-T is the unmodified architecture with its depthwise $7\times7$ blocks;
+WTConvNeXt-T is the same architecture with every depthwise convolution replaced
+by WTConv at $k{=}5$ with $(5,4,3,2)$ decomposition levels across the four
+stages, in the reference and in the fused implementation. Parenthesised values
+are relative to ConvNeXt-T and the last column is fused relative to the
+reference; $\uparrow$ marks the rows where larger is better and $\downarrow$
+those where smaller is. Batch $64$ at $224\times224$ in \texttt{fp32}, all three
+networks compiled with \texttt{torch.compile}, $20$ warmup and $50$ timed batches
+on the device of \autoref{sec:setup}, with the memory counter reset after warmup
+so that it reflects a steady-state iteration. Unlike
+\autoref{tab:latency-train,tab:latency,tab:memory,tab:memory-inference}, these
+are absolute measurements at a single shape rather than geometric means over a
+sweep.}
 \label{tab:endtoend}
-\begin{tabular}{lrcrc}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{llcccc}
 \toprule
-\multirow{2}{*}{Model} & \multicolumn{2}{c}{Inference} & \multicolumn{2}{c}{Training step} \\
-\cmidrule(lr){2-3}\cmidrule(lr){4-5}
- & img/s & rel. & img/s & rel. \\
+ & & ConvNeXt-T & \multicolumn{2}{c}{WTConvNeXt-T} & Fused / \\
+\cmidrule(lr){4-5}
+ & & (depthwise) & reference & \textbf{fused} & reference \\
 \midrule
-ConvNeXt-T (depthwise $k{=}7$) & $1382.6$ & $1.00\times$ & $248.8$ & $1.00\times$ \\
-WTConvNeXt-T, reference        & $421.3$  & $0.31\times$ & $165.8$ & $0.67\times$ \\
-WTConvNeXt-T, \textbf{fused}   & $973.5$  & $0.70\times$ & $263.9$ & $\mathbf{1.06\times}$ \\
-\addlinespace[2pt]
-\midrule
-Fused / reference & \multicolumn{2}{c}{$2.31\times$} & \multicolumn{2}{c}{$1.59\times$} \\
+\multirow{2}{*}{Inference}
+ & Throughput (img/s) $\uparrow$ & $1394.9$ & $420.7$ ($0.30\times$) & $988.5$ ($0.71\times$) & $2.35\times$ \\
+ & Peak memory (MiB) $\downarrow$ & $596.8$ & $887.4$ ($1.49\times$) & $750.8$ ($1.26\times$) & $0.85\times$ \\
+\addlinespace[3pt]
+\multirow{2}{*}{Training step}
+ & Throughput (img/s) $\uparrow$ & $247.7$ & $166.3$ ($0.67\times$) & $\mathbf{263.0}$ ($\mathbf{1.06\times}$) & $1.58\times$ \\
+ & Peak memory (MiB) $\downarrow$ & $6933.2$ & $9685.6$ ($1.40\times$) & $7618.4$ ($1.10\times$) & $0.79\times$ \\
 \bottomrule
 \end{tabular}
 \end{table}

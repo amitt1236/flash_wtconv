@@ -340,7 +340,7 @@ Traffic removed & $2.54\times$ & $2.55\times$ & $2.56\times$ & $2.56\times$ & $2
 \label{sec:setup}
 
 All measurements are single-layer microbenchmarks, except for the whole-network
-throughput of \autoref{sec:results-endtoend}, which states its own protocol. We sweep
+results of \autoref{sec:results-endtoend}, which state their own protocol. We sweep
 $C\in\{32,64,128\}$ and $H=W\in\{128,256,512\}$ at $B{=}8$ and
 $L\in\{1,\dots,5\}$, in \texttt{fp32} and \texttt{fp16}, over both protocols
 below and over both a forward pass and a full training step. Each configuration runs $20$ warmup iterations followed by $50$ iterations timed individually.
@@ -534,7 +534,7 @@ the depthwise $7\times7$ convolution's footprint in \texttt{fp32} and
 $0.99$--$1.15\times$ in \texttt{fp16}, the residual being the filtered subband
 coefficients it must materialise between the analysis and synthesis passes.
 
-\subsection{End-to-end network throughput}
+\subsection{End-to-end network throughput and memory}
 \label{sec:results-endtoend}
 
 \input{results/tab_endtoend.tex}
@@ -550,38 +550,60 @@ convolution replaced by WTConv at $k{=}5$, with $(5,4,3,2)$ levels across the fo
 stages --- in both the reference and the fused implementation. All three are
 compiled with \texttt{torch.compile} and run at batch $64$ and $224\times224$ in
 \texttt{fp32} on the same RTX~A6000, with $20$ warmup and $50$ timed batches.
-\autoref{tab:endtoend} reports images per second. These are throughput
-measurements on randomly initialised weights: the reformulation is exact
+\autoref{tab:endtoend} reports images per second and peak allocated memory, the
+latter measured over the timed iterations only so that it reflects a steady-state
+iteration rather than compilation transients. These are cost measurements on
+randomly initialised weights: the reformulation is exact
 (\autoref{tab:correctness}), so accuracy is by construction unaffected and is not
 at issue here.
 
 The operator's cost is visible at network scale. Substituting the reference
 WTConv into ConvNeXt-T costs more than two thirds of the inference throughput
-($1382.6\to421.3$~img/s, $0.31\times$) and a third of the training throughput
-($248.8\to165.8$~img/s, $0.67\times$); a layer-level slowdown of this magnitude
-is not amortised away by the rest of the network. The fused implementation
-recovers most of it, reaching $2.31\times$ the reference's inference throughput
-and $1.59\times$ its training throughput. As in the microbenchmarks, the
-comparison against the baseline reverses over a training step and does not at
-inference: WTConvNeXt-T with the fused layer trains $1.06\times$ faster than
-ConvNeXt-T itself, so a $2$--$5$ level wavelet decomposition in every block is
-obtained at no cost in training throughput, whereas at inference it reaches
-$0.70\times$ ConvNeXt-T rather than parity. The direction of both gaps also
-matches \autoref{tab:latency-train,tab:latency}, where the reference's deficit
-against the depthwise $7\times7$ convolution is likewise larger at inference than
-over a training step.
+($1394.9\to420.7$~img/s, $0.30\times$) and nearly a third of the training
+throughput ($247.7\to166.3$~img/s, $0.67\times$); a layer-level slowdown of this
+magnitude is not amortised away by the rest of the network. The fused
+implementation recovers most of it, reaching $2.35\times$ the reference's
+inference throughput and $1.58\times$ its training throughput. As in the
+microbenchmarks, the comparison against the baseline reverses over a training
+step and does not at inference: WTConvNeXt-T with the fused layer trains
+$1.06\times$ faster than ConvNeXt-T itself, so a $2$--$5$ level wavelet
+decomposition in every block is obtained at no cost in training throughput,
+whereas at inference it reaches $0.71\times$ ConvNeXt-T rather than parity. The
+direction of both gaps also matches \autoref{tab:latency-train,tab:latency},
+where the reference's deficit against the depthwise $7\times7$ convolution is
+likewise larger at inference than over a training step.
+
+Peak memory behaves the same way, and it is the quantity that decides whether a
+substitution is affordable at a given batch size. The intermediates the reference
+materialises are visible network-wide: WTConvNeXt-T peaks at $1.49\times$
+ConvNeXt-T's inference footprint and $1.40\times$ its training footprint, the
+latter an extra $2.7$~GiB at batch $64$. The fused layer removes most of that
+excess, cutting the network's training peak to $0.79\times$ the reference's and
+its inference peak to $0.85\times$, which leaves it at $1.10\times$ and
+$1.26\times$ ConvNeXt-T's respective footprints. Almost none of the residual is
+parameters: WTConvNeXt-T carries $30.6$M against ConvNeXt-T's $28.6$M, so the
+extra weights and their gradients account for $15$~MiB of the $685$~MiB
+training-peak gap, and the rest is activations --- the quantity
+\autoref{sec:method} targets. The inference figure falls inside the per-layer
+range of \autoref{tab:memory-inference} ($1.15$--$1.34\times$ the depthwise
+$7\times7$ convolution); the training figure sits just above the per-layer range
+of \autoref{tab:memory} ($0.87$--$1.02\times$), which dilution by the untouched
+layers cannot explain, since that would move the ratio toward $1.00$ rather than
+past it. The shapes are the more likely cause, for the reason given next.
 
 The end-to-end ratios are not, and should not be read as, the per-layer ratios of
-\autoref{tab:latency-train,tab:latency} carried through Amdahl's law. Two effects
-separate them. First, shapes: WTConvNeXt applies $5$ levels to a $56\times56$
+\autoref{tab:latency-train,tab:latency,tab:memory,tab:memory-inference} carried
+through Amdahl's law. Two effects separate them. First, shapes: WTConvNeXt
+applies $5$ levels to a $56\times56$
 stage-one feature map, whose deepest subband is $2\times2$, and $2$ levels to a
 $7\times7$ one; these are coarser and smaller than anything in the
-$H{=}W\in\{128,256,512\}$ sweep, and both implementations lose occupancy there.
-Second, the compiler: \texttt{torch.compile} fuses the surrounding pointwise and
-normalisation work in all three networks, but the fused layer enters its graph as
-an opaque custom op, so the per-layer advantage is being spent against a baseline
-that has itself been optimised end to end. We report the measurement as it stands
-rather than adjust for either.
+$H{=}W\in\{128,256,512\}$ sweep, and both implementations lose occupancy and
+coefficient-tensor economy there. Second, the compiler: \texttt{torch.compile}
+fuses the surrounding pointwise and normalisation work in all three networks, and
+can elide intermediates in the two convolutional baselines, but the fused layer
+enters its graph as an opaque custom op; the per-layer advantage is therefore
+being spent against baselines that have themselves been optimised end to end. We
+report the measurements as they stand rather than adjust for either.
 
 %==============================================================================
 
