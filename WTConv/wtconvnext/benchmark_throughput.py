@@ -53,7 +53,8 @@ BENCHMARK_REGULAR = True  # Set to True to include regular/naive WTConvNeXt benc
 USE_TORCH_COMPILE = True  # Set to True to wrap models with torch.compile() - incompatible with custom Triton kernels
 CONVNEXT_KERNEL_SIZE = 7  # Kernel size for ConvNeXt depthwise convolutions (default: 7)
 WTCONVNEXT_KERNEL_SIZE = 5  # Kernel size for WTConvNeXt depthwise convolutions (default: 5)
-USE_CONV_MLP = True  # Use 1x1 conv in MLP
+USE_CONV_MLP = False  # Use 1x1 conv in MLP
+BENCHMARK_TRAINING_STEP = True  # Set to True to benchmark a full training step (forward + backward + optimizer step) instead of inference only
 
 
 # Lazy-loaded WTConv classes
@@ -103,62 +104,96 @@ def create_wtconvnext_triton(size='tiny'):
         return wtconvnext_base(pretrained=False, wtconv_class=WTConv2dTriton, conv_mlp=USE_CONV_MLP, kernel_sizes=WTCONVNEXT_KERNEL_SIZE)
 
 
-def benchmark_model(model, device, batch_size=64, warmup_batches=20, measure_batches=50):
+def benchmark_model(model, device, batch_size=64, warmup_batches=20, measure_batches=50, training_step=False):
     """
     Benchmark model throughput.
-    
+
     Args:
         model: PyTorch model to benchmark
         device: CUDA device
         batch_size: Number of images per batch
         warmup_batches: Number of warmup batches (not timed)
         measure_batches: Number of batches to measure
-        
+        training_step: If True, benchmark a full training step (forward + backward +
+            optimizer step) instead of inference-only forward passes
+
     Returns:
         float: Throughput in images per second
     """
-    model.eval()
     model = model.to(device)
-    
+
     # Optionally compile the model
     if USE_TORCH_COMPILE:
         model = torch.compile(model)
-    
+
     # Create input tensor
     x = torch.randn(batch_size, 3, 224, 224, device=device)
-    
-    # Warmup (suppress output during first forward which may trigger compilation)
-    with torch.no_grad():
-        # First forward may trigger CUDA compilation - suppress output
+
+    if training_step:
+        model.train()
+        optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
+        criterion = torch.nn.CrossEntropyLoss()
+        targets = torch.randint(0, 1000, (batch_size,), device=device)
+
+        def step():
+            optimizer.zero_grad(set_to_none=True)
+            loss = criterion(model(x), targets)
+            loss.backward()
+            optimizer.step()
+
+        # Warmup (suppress output during first step which may trigger compilation)
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            _ = model(x)
-        # Rest of warmup
+            step()
         for _ in range(warmup_batches - 1):
-            _ = model(x)
-    
-    # Synchronize before timing
-    torch.cuda.synchronize()
-    
-    # Create CUDA events for timing
-    start_event = torch.cuda.Event(enable_timing=True)
-    end_event = torch.cuda.Event(enable_timing=True)
-    
-    # Measure
-    with torch.no_grad():
+            step()
+
+        # Synchronize before timing
+        torch.cuda.synchronize()
+
+        # Create CUDA events for timing
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
+        # Measure
         start_event.record()
         for _ in range(measure_batches):
-            _ = model(x)
+            step()
         end_event.record()
-    
+    else:
+        model.eval()
+
+        # Warmup (suppress output during first forward which may trigger compilation)
+        with torch.no_grad():
+            # First forward may trigger CUDA compilation - suppress output
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                _ = model(x)
+            # Rest of warmup
+            for _ in range(warmup_batches - 1):
+                _ = model(x)
+
+        # Synchronize before timing
+        torch.cuda.synchronize()
+
+        # Create CUDA events for timing
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
+        # Measure
+        with torch.no_grad():
+            start_event.record()
+            for _ in range(measure_batches):
+                _ = model(x)
+            end_event.record()
+
     # Wait for completion and get elapsed time
     torch.cuda.synchronize()
     elapsed_ms = start_event.elapsed_time(end_event)
     elapsed_sec = elapsed_ms / 1000.0
-    
+
     # Calculate throughput
     total_images = measure_batches * batch_size
     throughput = total_images / elapsed_sec
-    
+
     return throughput
 
 
@@ -227,7 +262,7 @@ def main():
             current_size = 'B'
 
         model = model_factory()
-        throughput = benchmark_model(model, device)
+        throughput = benchmark_model(model, device, training_step=BENCHMARK_TRAINING_STEP)
         results.append((name, throughput, is_baseline))
         
         if is_baseline:
