@@ -499,10 +499,6 @@ void fused_haar_conv_backward(
     AT_CUDA_CHECK(cudaGetLastError());
 }
 
-// Register pressure caps the fused weight gradient: a thread holds K*K
-// accumulators against the 64-register budget a 1024-thread block gets, which
-// K=7 just fits (64 registers, no spill) and K=9 does not. Callers fall back to
-// the coefficient + cuDNN path there (see haar_cuda._grad_weight_scale).
 int fused_haar_grad_weight_max_k() { return 7; }
 
 void fused_haar_grad_weight(
