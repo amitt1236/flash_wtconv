@@ -241,21 +241,33 @@ __global__ void fused_haar_conv_scale_bwd_kernel(
 //
 // which is the forward's tap loop with the roles of "sum over taps" and "sum
 // over positions" swapped. Computing P_s on the fly means the coefficients are
-// never materialised here either, so this reads the input and the output
-// gradient once each -- against cuDNN's grouped depthwise weight gradient,
-// which was the single most expensive kernel in a training step.
+// never materialised here either: this reads the output gradient once and the
+// input 4/NZ times (see GRAD_W_NZ), against cuDNN's grouped depthwise weight
+// gradient, which was the single most expensive kernel in a training step.
 //
-// Layout: threadIdx.z picks the subband, so a thread only carries K*K
-// accumulators in registers (not 4*K*K) and loads one gradient value per
-// position; all four subbands share the staged partial-sum tile. Each warp
+// Layout: the subband axis is split between threadIdx.z (NZ of them) and
+// blockIdx.z (the remaining 4/NZ), so a thread carries only K*K accumulators in
+// registers (not 4*K*K) and loads one gradient value per position. Each warp
 // reduces its accumulators with shuffles and atomically adds the result, so a
-// block's whole spatial chunk costs K*K atomics per warp.
+// block's whole spatial chunk costs K*K atomics per warp. The split does not
+// change the total atomic count: halving NZ halves the warps per block and
+// doubles the number of blocks.
+//
+// NZ is what sets the per-thread register budget, since the 64K-register file
+// is divided among a block's threads. At NZ=4 (1024 threads) a thread gets 64
+// registers and only one block fits per SM, so every __syncthreads() idles the
+// whole SM and the kernel reaches just ~26% of peak DRAM bandwidth. At NZ=2
+// (512 threads) it gets 128, two blocks fit, and they de-phase across the
+// barrier -- measured ~57% of peak. That is worth more than the cost of staging
+// the tile once per subband pair instead of once per four (which really does
+// read the level input 4/NZ times; L2 does not absorb it). See
+// fused_haar_grad_weight() for the measured numbers.
 //
 // The atomics make this non-deterministic across runs at fp32 rounding level,
 // as cuDNN's own weight gradient is.
 // -----------------------------------------------------------------------------
-template<typename T, int K>
-__global__ __launch_bounds__(TILE_W * TILE_H * 4) void fused_haar_grad_weight_kernel(
+template<typename T, int K, int NZ>
+__global__ __launch_bounds__(TILE_W * TILE_H * NZ) void fused_haar_grad_weight_kernel(
     const T* __restrict__ input,         // (B, C, H, W), contiguous, even dims
     const T* __restrict__ grad_output,   // (B, C, 4, H2, W2), contiguous
     float* __restrict__ grad_fused_w,    // (C, 4, K, K) fp32, pre-zeroed
@@ -266,16 +278,17 @@ __global__ __launch_bounds__(TILE_W * TILE_H * 4) void fused_haar_grad_weight_ke
     constexpr int SH = TILE_H + K - 1;
     constexpr int SW = TILE_W + K - 1;
     constexpr int SPLANE = SH * SW;
-    constexpr int NTHREADS = TILE_W * TILE_H * 4;
+    constexpr int NTHREADS = TILE_W * TILE_H * NZ;
 
-    __shared__ float sh_p[4][SPLANE];
+    __shared__ float sh_p[NZ][SPLANE];   // only the planes this block owns
 
     float acc[K * K];
     #pragma unroll
     for (int i = 0; i < K * K; ++i) acc[i] = 0.f;
 
     const int c = blockIdx.y;
-    const int s = threadIdx.z;
+    const int sbase = blockIdx.z * NZ;   // first subband this block owns
+    const int s = sbase + threadIdx.z;   // this thread's subband
     const int tid = (threadIdx.z * TILE_H + threadIdx.y) * TILE_W + threadIdx.x;
     const int plane = H2 * W2;
     const long tiles_total = (long)tiles_area * B;
@@ -303,10 +316,13 @@ __global__ __launch_bounds__(TILE_W * TILE_H * 4) void fused_haar_grad_weight_ke
                           to_float(__ldg(row1)), to_float(__ldg(row1 + 1)),
                           ll, lh, hl, hh);
             }
-            sh_p[0][i] = ll;
-            sh_p[1][i] = lh;
-            sh_p[2][i] = hl;
-            sh_p[3][i] = hh;
+            // Stage only the planes this block owns. At NZ=4 the subband index
+            // is a compile-time constant and the selects fold away entirely.
+            #pragma unroll
+            for (int j = 0; j < NZ; ++j) {
+                const int sj = sbase + j;
+                sh_p[j][i] = (sj == 0) ? ll : (sj == 1) ? lh : (sj == 2) ? hl : hh;
+            }
         }
         __syncthreads();
 
@@ -323,7 +339,8 @@ __global__ __launch_bounds__(TILE_W * TILE_H * 4) void fused_haar_grad_weight_ke
             const int srow = (threadIdx.y + kh) * SW + threadIdx.x;
             #pragma unroll
             for (int kw = 0; kw < K; ++kw) {
-                acc[kh * K + kw] = fmaf(g, sh_p[s][srow + kw], acc[kh * K + kw]);
+                // sh_p is indexed by the local z; `s` is the global subband.
+                acc[kh * K + kw] = fmaf(g, sh_p[threadIdx.z][srow + kw], acc[kh * K + kw]);
             }
         }
     }
@@ -499,7 +516,30 @@ void fused_haar_conv_backward(
     AT_CUDA_CHECK(cudaGetLastError());
 }
 
-int fused_haar_grad_weight_max_k() { return 7; }
+// Subbands per block for the weight-gradient kernel; the other 4/NZ ride on
+// blockIdx.z. This is the knob that sets the per-thread register budget
+// (65536 / (TILE_W * TILE_H * NZ)) and hence the largest K that stays out of
+// local memory. Measured with ptxas on sm_80/86/90, identically on all three:
+//
+//   NZ   threads  regs/thread  spill-free up to   input read
+//    4      1024           64  K=7 (K=9 spills)         1x
+//    2       512          128  K=9 (K=11 spills)        2x
+//    1       256          256  K=15                     4x
+//
+// NZ=2 is the default because it is also faster at every K the layer deploys:
+// 1.11-1.47x at K=3, 1.18-1.39x at K=5 and 3.78-5.74x at K=9 against NZ=4 on an
+// A6000. That is not a traffic win -- NZ=2 moves 1.66x the DRAM bytes at K=5 --
+// but at NZ=4 the block is too register-hungry for a second block to fit per SM,
+// so every barrier idles the whole SM and the kernel sustains only ~26% of peak
+// bandwidth against NZ=2's ~57%. K=7 is the sole exception (NZ=4 is 3-16% ahead
+// on sm_75-sm_89, where it does not spill); K=7 is not a deployed size and the
+// portability of one code path is worth more than that.
+constexpr int GRAD_W_NZ = 2;
+
+// K=9 is the ceiling for NZ=2, and also the largest kernel the rest of the
+// layer accepts (see FUSED_DISPATCH_K). Callers fall back to the coefficient +
+// cuDNN path above it (see haar_cuda._grad_weight_scale).
+int fused_haar_grad_weight_max_k() { return 9; }
 
 void fused_haar_grad_weight(
     torch::Tensor input,                       // (B, C, H, W), even dims
@@ -526,34 +566,35 @@ void fused_haar_grad_weight(
     if (tiles_area == 0 || B == 0) return;
 
     // Aim for a couple of blocks per SM; each block then sweeps a long run of
-    // tiles, so the reduction epilogue stays amortised.
+    // tiles, so the reduction epilogue stays amortised. The block shrinks by the
+    // same factor that gridDim.z grows, so this formula holds the total resident
+    // thread count fixed across NZ.
     const int sms = at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
     const long tiles_total = (long)tiles_area * B;
     long bpc = (2L * sms + C - 1) / C;
     bpc = std::max(1L, std::min(bpc, tiles_total));
 
-    dim3 block(TILE_W, TILE_H, 4);
-    dim3 grid((unsigned)bpc, (unsigned)C);
+    dim3 block(TILE_W, TILE_H, GRAD_W_NZ);
+    dim3 grid((unsigned)bpc, (unsigned)C, (unsigned)(4 / GRAD_W_NZ));
     auto stream = at::cuda::getCurrentCUDAStream();
     float* gwptr = grad_fused_weight.data_ptr<float>();
 
+#define GRAD_W_LAUNCH(T, KK)                                                    \
+    fused_haar_grad_weight_kernel<T, KK, GRAD_W_NZ><<<grid, block, 0, stream>>>( \
+        haar_cptr<T>(input), haar_cptr<T>(grad_output), gwptr,                   \
+        B, C, H, W, H2, W2, tiles_x, tiles_area)
+
     HAAR_DISPATCH_DTYPE(input, "fused_haar_grad_weight", [&] {
         switch (K) {
-            case 1: fused_haar_grad_weight_kernel<scalar_t, 1><<<grid, block, 0, stream>>>(
-                        haar_cptr<scalar_t>(input), haar_cptr<scalar_t>(grad_output),
-                        gwptr, B, C, H, W, H2, W2, tiles_x, tiles_area); break;
-            case 3: fused_haar_grad_weight_kernel<scalar_t, 3><<<grid, block, 0, stream>>>(
-                        haar_cptr<scalar_t>(input), haar_cptr<scalar_t>(grad_output),
-                        gwptr, B, C, H, W, H2, W2, tiles_x, tiles_area); break;
-            case 5: fused_haar_grad_weight_kernel<scalar_t, 5><<<grid, block, 0, stream>>>(
-                        haar_cptr<scalar_t>(input), haar_cptr<scalar_t>(grad_output),
-                        gwptr, B, C, H, W, H2, W2, tiles_x, tiles_area); break;
-            case 7: fused_haar_grad_weight_kernel<scalar_t, 7><<<grid, block, 0, stream>>>(
-                        haar_cptr<scalar_t>(input), haar_cptr<scalar_t>(grad_output),
-                        gwptr, B, C, H, W, H2, W2, tiles_x, tiles_area); break;
+            case 1: GRAD_W_LAUNCH(scalar_t, 1); break;
+            case 3: GRAD_W_LAUNCH(scalar_t, 3); break;
+            case 5: GRAD_W_LAUNCH(scalar_t, 5); break;
+            case 7: GRAD_W_LAUNCH(scalar_t, 7); break;
+            case 9: GRAD_W_LAUNCH(scalar_t, 9); break;
             default: TORCH_CHECK(false, "unsupported kernel size ", K);
         }
     });
+#undef GRAD_W_LAUNCH
     AT_CUDA_CHECK(cudaGetLastError());
 }
 
