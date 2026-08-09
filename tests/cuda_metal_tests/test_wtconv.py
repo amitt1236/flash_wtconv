@@ -97,7 +97,7 @@ def test_correctness(device: str, dtype=torch.float32):
         x = torch.randn(B, C, H, W, device=device, dtype=dtype)
         
         # My WTConv model
-        v2 = WTConv2d(C, C, kernel_size=k, wt_levels=depth, device=device).to(device).to(dtype)
+        v2 = WTConv2d(C, C, kernel_size=k, wt_levels=depth).to(device).to(dtype)
         naive = WTConv2dNaive(C, C, kernel_size=k, wt_levels=depth).to(device).to(dtype)
         copy_weights_to_naive(v2, naive, depth)
         
@@ -130,7 +130,7 @@ def test_backward(device: str, dtype=torch.float32):
         x = torch.randn(B, C, H, W, device=device, dtype=dtype, requires_grad=True)
         x_naive = x.clone().detach().requires_grad_(True)
         
-        v2 = WTConv2d(C, C, kernel_size=k, wt_levels=depth, device=device).to(device).to(dtype)
+        v2 = WTConv2d(C, C, kernel_size=k, wt_levels=depth).to(device).to(dtype)
         naive = WTConv2dNaive(C, C, kernel_size=k, wt_levels=depth).to(device).to(dtype)
         copy_weights_to_naive(v2, naive, depth)
         

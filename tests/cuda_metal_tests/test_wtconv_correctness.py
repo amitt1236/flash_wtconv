@@ -73,7 +73,7 @@ def run_case(B, C, H, W, K, depth, dtype, stride=1, bias=True, verbose=True):
 
     torch.manual_seed(42)
     model = WTConv2d(C, C, kernel_size=K, wt_levels=depth, stride=stride,
-                     bias=bias, device='cuda').cuda().to(dtype)
+                     bias=bias).cuda().to(dtype)
     naive = WTConv2dNaive(C, C, kernel_size=K, wt_levels=depth, stride=stride,
                           bias=bias).cuda().to(dtype)
     copy_weights_to_naive(model, naive, depth)

@@ -16,9 +16,6 @@ folded into weight and bias).
 
 Numerics follow WTConv/wtconv/wtconv2d.py exactly, including the per-level zero
 padding of odd spatial sizes and the crop on reconstruction.
-
-Apple Silicon (MPS) keeps the earlier coefficient-materialising Metal path; see
-_forward_metal.
 """
 
 import math
@@ -27,29 +24,19 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Device-aware Haar kernel imports
 _cuda_haar = None
-_metal_haar = None
 
 
-def _get_haar_module(device_type: str):
-    """Get the appropriate haar module based on device type."""
-    global _cuda_haar, _metal_haar
-
-    if device_type == 'mps':
-        if _metal_haar is None:
-            from metal_haar import haar_metal as _metal_haar_import
-            _metal_haar = _metal_haar_import
-        return _metal_haar
-    else:  # cuda or cpu
-        if _cuda_haar is None:
-            from cuda_haar import haar_cuda as _cuda_haar_import
-            _cuda_haar = _cuda_haar_import
-        return _cuda_haar
+def _get_haar_module():
+    """Import the fused CUDA kernels, deferred so they compile on first use."""
+    global _cuda_haar
+    if _cuda_haar is None:
+        from cuda_haar import haar_cuda as _cuda_haar_import
+        _cuda_haar = _cuda_haar_import
+    return _cuda_haar
 
 
 class WTConv2d(nn.Module):
@@ -60,7 +47,6 @@ class WTConv2d(nn.Module):
         kernel_size: Convolution kernel size, odd and <= 7 (default: 5)
         wt_levels: Number of wavelet decomposition levels (1-5)
         bias: Include bias in base convolution (default: True)
-        device: 'cuda' or 'mps'; auto-detected when omitted
     """
 
     def __init__(
@@ -71,7 +57,6 @@ class WTConv2d(nn.Module):
         stride: int = 1,
         wt_levels: int = 1,
         bias: bool = True,
-        device: str = None
     ):
         super().__init__()
 
@@ -91,11 +76,7 @@ class WTConv2d(nn.Module):
         else:
             self.do_stride = None
 
-        # Auto-detect device if not specified
-        if device is None:
-            device = 'mps' if torch.backends.mps.is_available() else 'cuda'
-        self.device_type = device
-        self._haar = _get_haar_module(device)
+        self._haar = _get_haar_module()
 
         # Base conv parameters (weights are plain tensors: they get fused with
         # base_scale before the convolution)
@@ -133,11 +114,7 @@ class WTConv2d(nn.Module):
             nn.init.kaiming_uniform_(w, a=math.sqrt(5))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.device_type == 'mps':
-            return self._forward_metal(x)
-
         haar = self._haar
-        B, C, H, W = x.shape
         K = self.kernel_size
 
         # Base conv at full resolution, on the unpadded input
@@ -154,46 +131,3 @@ class WTConv2d(nn.Module):
         if self.do_stride is not None:
             output = self.do_stride(output)
         return output
-
-    # -------------------------------------------------------------------------
-    # Metal (MPS) path: coefficient-materialising cascade kernels
-    # -------------------------------------------------------------------------
-    def _forward_metal(self, x: torch.Tensor) -> torch.Tensor:
-        haar = self._haar
-        B, C, H, W = x.shape
-        padding = self.kernel_size // 2
-
-        if (H & 1) or (W & 1):
-            x = F.pad(x, (0, W & 1, 0, H & 1))
-
-        forward_fns = [haar.haar2d, haar.haar2d_double, haar.haar2d_triple,
-                       haar.haar2d_quad, haar.haar2d_quint]
-        levels = forward_fns[self.wt_levels - 1](x)
-        if self.wt_levels == 1:
-            levels = [levels]
-        convd = [self._apply_conv(l, i, padding, haar) for i, l in enumerate(levels)]
-
-        if self.wt_levels == 1:
-            output_wt = haar.ihaar2d(convd[0], output_size=(H, W))
-        else:
-            inverse_fns = [None, haar.ihaar2d_double, haar.ihaar2d_triple,
-                           haar.ihaar2d_quad, haar.ihaar2d_quint]
-            output_wt = inverse_fns[self.wt_levels - 1](*convd, (H, W))
-
-        base_out = haar.scaled_depthwise_conv(
-            x[:, :, :H, :W], self.base_weight, self.base_scale, padding,
-            bias=self.base_bias,
-        )
-        output = base_out + output_wt
-
-        if self.do_stride is not None:
-            output = self.do_stride(output)
-        return output
-
-    def _apply_conv(self, coeffs: torch.Tensor, level: int, padding: int, haar) -> torch.Tensor:
-        B, C, _, h, w = coeffs.shape
-        flat = coeffs.reshape(B, C * 4, h, w)
-        out = haar.scaled_depthwise_conv(
-            flat, self.wt_weights[level], self.wt_scales[level], padding
-        )
-        return out.view(B, C, 4, h, w)
