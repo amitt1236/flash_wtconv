@@ -21,6 +21,12 @@
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 
+// Largest convolution kernel size the fused kernels are instantiated for. Every
+// kernel here holds K*K (or a haloed (TILE + K - 1)^2 tile) per thread or block,
+// so K = 7 is where the register and shared-memory budgets still allow a useful
+// occupancy. There is no path above it -- larger K is rejected, not fallen back.
+#define HAAR_MAX_K 7
+
 // -----------------------------------------------------------------------------
 // Type conversion helpers (compute always happens in fp32)
 // -----------------------------------------------------------------------------

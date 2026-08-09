@@ -400,8 +400,8 @@ __global__ void haar_coeffs_kernel(
         case 3: FUSED_LAUNCH(KERNEL, T, 3, __VA_ARGS__); break;                \
         case 5: FUSED_LAUNCH(KERNEL, T, 5, __VA_ARGS__); break;                \
         case 7: FUSED_LAUNCH(KERNEL, T, 7, __VA_ARGS__); break;                \
-        case 9: FUSED_LAUNCH(KERNEL, T, 9, __VA_ARGS__); break;                \
-        default: TORCH_CHECK(false, "kernel_size must be odd and <= 9, got ", K); \
+        default: TORCH_CHECK(false, "kernel_size must be odd and <= ",         \
+                             HAAR_MAX_K, ", got ", K);                         \
     }
 
 // Validates shapes and returns the conv kernel size K taken from the fused
@@ -419,7 +419,8 @@ static int check_fused_shapes(const torch::Tensor& x, const torch::Tensor& fused
                 "fused weight must be (C, 4, K, K)");
     const int K = (int)fused_w.size(2);
     TORCH_CHECK(fused_w.size(3) == K, "fused weight must be square");
-    TORCH_CHECK(K % 2 == 1, "kernel_size must be odd, got ", K);
+    TORCH_CHECK(K % 2 == 1 && K <= HAAR_MAX_K,
+                "kernel_size must be odd and <= ", HAAR_MAX_K, ", got ", K);
     return K;
 }
 
@@ -499,8 +500,6 @@ void fused_haar_conv_backward(
     AT_CUDA_CHECK(cudaGetLastError());
 }
 
-int fused_haar_grad_weight_max_k() { return 7; }
-
 void fused_haar_grad_weight(
     torch::Tensor input,                       // (B, C, H, W), even dims
     torch::Tensor grad_output,                 // (B, C, 4, H2, W2)
@@ -512,9 +511,6 @@ void fused_haar_grad_weight(
     const int B = input.size(0), C = input.size(1), H = input.size(2), W = input.size(3);
     const int H2 = H / 2, W2 = W / 2;
     const int K = check_fused_shapes(input, grad_fused_weight, C, H, W);
-    TORCH_CHECK(K <= fused_haar_grad_weight_max_k(),
-                "fused weight gradient supports K <= ", fused_haar_grad_weight_max_k(),
-                ", got ", K);
     TORCH_CHECK(grad_output.size(3) == H2 && grad_output.size(4) == W2,
                 "grad_output spatial dims must be H/2, W/2");
     TORCH_CHECK(input.scalar_type() == grad_output.scalar_type(),
@@ -538,21 +534,9 @@ void fused_haar_grad_weight(
     float* gwptr = grad_fused_weight.data_ptr<float>();
 
     HAAR_DISPATCH_DTYPE(input, "fused_haar_grad_weight", [&] {
-        switch (K) {
-            case 1: fused_haar_grad_weight_kernel<scalar_t, 1><<<grid, block, 0, stream>>>(
-                        haar_cptr<scalar_t>(input), haar_cptr<scalar_t>(grad_output),
-                        gwptr, B, C, H, W, H2, W2, tiles_x, tiles_area); break;
-            case 3: fused_haar_grad_weight_kernel<scalar_t, 3><<<grid, block, 0, stream>>>(
-                        haar_cptr<scalar_t>(input), haar_cptr<scalar_t>(grad_output),
-                        gwptr, B, C, H, W, H2, W2, tiles_x, tiles_area); break;
-            case 5: fused_haar_grad_weight_kernel<scalar_t, 5><<<grid, block, 0, stream>>>(
-                        haar_cptr<scalar_t>(input), haar_cptr<scalar_t>(grad_output),
-                        gwptr, B, C, H, W, H2, W2, tiles_x, tiles_area); break;
-            case 7: fused_haar_grad_weight_kernel<scalar_t, 7><<<grid, block, 0, stream>>>(
-                        haar_cptr<scalar_t>(input), haar_cptr<scalar_t>(grad_output),
-                        gwptr, B, C, H, W, H2, W2, tiles_x, tiles_area); break;
-            default: TORCH_CHECK(false, "unsupported kernel size ", K);
-        }
+        FUSED_DISPATCH_K(fused_haar_grad_weight_kernel, scalar_t,
+                         haar_cptr<scalar_t>(input), haar_cptr<scalar_t>(grad_output),
+                         gwptr, B, C, H, W, H2, W2, tiles_x, tiles_area);
     });
     AT_CUDA_CHECK(cudaGetLastError());
 }

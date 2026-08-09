@@ -128,7 +128,7 @@ def main():
 
     print("\n[levels x kernel sizes, fp32]")
     depths = [1, 2, 3] if args.quick else [1, 2, 3, 4, 5]
-    kernels = [3, 5] if args.quick else [1, 3, 5, 7, 9]
+    kernels = [3, 5] if args.quick else [1, 3, 5, 7]
     for depth in depths:
         for K in kernels:
             results.append(run_case(2, 16, 64, 64, K, depth, torch.float32))

@@ -8,7 +8,7 @@ WTConv wavelet filters (WTConv/wtconv/util/wavelet.py):
     fused_haar_conv_scale   vs haar -> grouped conv2d -> scale
     run_ihaar_cascade       vs the reference bottom-up reconstruction loop
     wavelet_branch          vs the whole reference wavelet branch
-    fused weight gradient   vs the cuDNN fallback it replaces
+    fused weight gradient   vs the cuDNN grouped weight gradient it replaces
     gradients               vs autograd through those reference compositions
 
 TF32 is disabled: the reference paths are cuDNN convolutions, which would
@@ -66,6 +66,24 @@ def ref_fused(x, w, s, K):
     return (out * s.reshape(1, C * 4, 1, 1)).reshape(B, C, 4, h, w_)
 
 
+def ref_grad_weight_scale(x, g, w, s, K):
+    """
+    Reference for the fused weight gradient: materialise the coefficients, take
+    cuDNN's grouped depthwise weight gradient, then unfuse the scale
+    (dL/dweight = s * dL/dw~, dL/dscale = sum(weight * dL/dw~)).
+    """
+    B, C = x.shape[0], x.shape[1]
+    C4 = C * 4
+    h2, w2 = g.shape[3], g.shape[4]
+    coeffs = ref_haar(x).reshape(B, C4, h2, w2)
+    grad_fused = torch.nn.grad.conv2d_weight(
+        coeffs, w.shape, g.reshape(B, C4, h2, w2), padding=K // 2, groups=C4
+    )
+    grad_weight = grad_fused * s.reshape(C4, 1, 1, 1)
+    grad_scale = (grad_fused * w).sum(dim=(1, 2, 3)).reshape_as(s)
+    return grad_weight, grad_scale
+
+
 def ref_cascade(levels, out_hw):
     """Reference bottom-up reconstruction, as in WTConv2d.forward."""
     nxt = 0
@@ -97,7 +115,7 @@ def test_haar():
 
 def test_fused_forward():
     print("\n[fused Haar -> conv -> scale]")
-    for K in [1, 3, 5, 7, 9]:
+    for K in [1, 3, 5, 7]:
         for (B, C, h, w) in [(2, 4, 16, 16), (1, 3, 32, 64), (2, 16, 64, 64)]:
             torch.manual_seed(0)
             x = torch.randn(B, C, h, w, device=DEV)
@@ -223,28 +241,21 @@ def test_fused_grads():
 
 
 def test_grad_weight_kernel():
-    """Fused weight-gradient kernel vs the cuDNN fallback it replaces."""
-    print("\n[fused weight gradient vs cuDNN fallback]")
-    mod = H._get_module()
-    real_max = mod.fused_haar_grad_weight_max_k
-    try:
-        for K in [1, 3, 5]:
-            for (B, C, h, w) in [(2, 8, 32, 32), (3, 4, 64, 48), (1, 16, 16, 16)]:
-                torch.manual_seed(6)
-                x = torch.randn(B, C, h, w, device=DEV)
-                weight = torch.randn(C * 4, 1, K, K, device=DEV) * 0.3
-                scale = torch.rand(1, C * 4, 1, 1, device=DEV) + 0.2
-                g = torch.randn(B, C, 4, h // 2, w // 2, device=DEV)
+    """Fused weight-gradient kernel vs the cuDNN grouped gradient it replaces."""
+    print("\n[fused weight gradient vs cuDNN]")
+    for K in [1, 3, 5, 7]:
+        for (B, C, h, w) in [(2, 8, 32, 32), (3, 4, 64, 48), (1, 16, 16, 16)]:
+            torch.manual_seed(6)
+            x = torch.randn(B, C, h, w, device=DEV)
+            weight = torch.randn(C * 4, 1, K, K, device=DEV) * 0.3
+            scale = torch.rand(1, C * 4, 1, 1, device=DEV) + 0.2
+            g = torch.randn(B, C, 4, h // 2, w // 2, device=DEV)
 
-                gw_f, gs_f = H._grad_weight_scale(x, g, weight, scale, K)
-                mod.fused_haar_grad_weight_max_k = lambda: 0   # force cuDNN path
-                gw_c, gs_c = H._grad_weight_scale(x, g, weight, scale, K)
-                mod.fused_haar_grad_weight_max_k = real_max
+            gw_f, gs_f = H._grad_weight_scale(x, g, weight, scale, K)
+            gw_c, gs_c = ref_grad_weight_scale(x, g, weight, scale, K)
 
-                check(f"grad_weight K={K} {B}x{C}x{h}x{w}", gw_f, gw_c, 2e-4)
-                check(f"grad_scale  K={K} {B}x{C}x{h}x{w}", gs_f, gs_c, 2e-3)
-    finally:
-        mod.fused_haar_grad_weight_max_k = real_max
+            check(f"grad_weight K={K} {B}x{C}x{h}x{w}", gw_f, gw_c, 2e-4)
+            check(f"grad_scale  K={K} {B}x{C}x{h}x{w}", gs_f, gs_c, 2e-3)
 
 
 def test_cascade_grads():

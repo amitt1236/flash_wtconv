@@ -52,10 +52,9 @@ _setup_cuda_arch()
 
 _module = None
 
-# Set to False to route every weight gradient through cuDNN's grouped depthwise
-# path instead of the dedicated reduction kernels. Only useful for A/B timing
-# and for reproducing cuDNN's exact rounding.
-FUSED_WEIGHT_GRAD = True
+# Largest kernel size the CUDA kernels are instantiated for (see HAAR_MAX_K in
+# haar_common.cuh). Anything larger is rejected, not routed elsewhere.
+MAX_KERNEL_SIZE = 7
 
 
 def _get_module():
@@ -128,27 +127,18 @@ def _grad_weight_scale(
         dL/dweight = scale * dL/dw~        dL/dscale = sum(weight * dL/dw~).
 
     dL/dw~ comes from a kernel that reduces grad_output against the Haar partial
-    sums computed on the fly, so the coefficients are never materialised. Above
-    the kernel's register budget (K > 5) it falls back to materialising them and
-    calling cuDNN's grouped weight gradient.
+    sums computed on the fly, so the coefficients are never materialised.
     """
     K = kernel_size
-    B, C = level_input.shape[0], level_input.shape[1]
+    C = level_input.shape[1]
     C4 = C * 4
-    mod = _get_module()
 
-    if FUSED_WEIGHT_GRAD and K <= mod.fused_haar_grad_weight_max_k():
-        grad_fused = torch.zeros(C, 4, K, K, device=level_input.device,
-                                 dtype=torch.float32)
-        mod.fused_haar_grad_weight(level_input, grad_output.contiguous(), grad_fused)
-        grad_fused = grad_fused.reshape(C4, 1, K, K).to(weight.dtype)
-    else:
-        H2, W2 = grad_output.shape[3], grad_output.shape[4]
-        coeffs = _haar_coeffs(level_input).reshape(B, C4, H2, W2).to(weight.dtype)
-        grad_flat = grad_output.reshape(B, C4, H2, W2).to(weight.dtype)
-        grad_fused = torch.nn.grad.conv2d_weight(
-            coeffs, weight.shape, grad_flat, padding=K // 2, groups=C4
-        )
+    grad_fused = torch.zeros(C, 4, K, K, device=level_input.device,
+                             dtype=torch.float32)
+    _get_module().fused_haar_grad_weight(
+        level_input, grad_output.contiguous(), grad_fused
+    )
+    grad_fused = grad_fused.reshape(C4, 1, K, K).to(weight.dtype)
 
     grad_weight = grad_fused * scale.reshape(C4, 1, 1, 1)
     grad_scale = (grad_fused * weight).sum(dim=(1, 2, 3)).reshape_as(scale)
@@ -160,7 +150,8 @@ class FusedHaarConvScaleFunction(Function):
     Autograd wrapper around the fused Haar -> conv -> scale kernel.
 
     forward:  x (B, C, H, W) -> coeffs (B, C, 4, H/2, W/2) [+ raw LL]
-    backward: fused kernel for grad_input, cuDNN for grad_weight / grad_scale.
+    backward: one fused kernel for grad_input, another for grad_weight /
+              grad_scale; neither materialises the coefficients.
     """
 
     @staticmethod
@@ -171,7 +162,8 @@ class FusedHaarConvScaleFunction(Function):
         assert H % 2 == 0 and W % 2 == 0, \
             f"fused Haar conv needs even spatial dims, got {H}x{W} (pad first)"
         K = kernel_size
-        assert K % 2 == 1, f"kernel_size must be odd, got {K}"
+        assert K % 2 == 1 and K <= MAX_KERNEL_SIZE, \
+            f"kernel_size must be odd and <= {MAX_KERNEL_SIZE}, got {K}"
 
         x = x.contiguous()
         H2, W2 = H // 2, W // 2
@@ -236,7 +228,7 @@ def fused_haar_conv_scale(
         x: (B, C, H, W) with even H, W
         weight: (C*4, 1, K, K) depthwise conv weights
         scale: (1, C*4, 1, 1) per-channel scales
-        kernel_size: K (odd, <= 9)
+        kernel_size: K (odd, <= 7)
         return_ll: also return the raw LL subband (B, C, H/2, W/2), i.e. the
                    input of the next decomposition level, computed for free.
 
@@ -282,7 +274,8 @@ class WaveletBranchFunction(Function):
         assert len(scales) == num_levels
         assert x.is_cuda and x.dim() == 4, "input must be a 4D CUDA tensor"
         K = kernel_size
-        assert K % 2 == 1, f"kernel_size must be odd, got {K}"
+        assert K % 2 == 1 and K <= MAX_KERNEL_SIZE, \
+            f"kernel_size must be odd and <= {MAX_KERNEL_SIZE}, got {K}"
 
         mod = _get_module()
         B, C, H, W = x.shape
@@ -396,7 +389,7 @@ def wavelet_branch(
         base_out: (B, C, H, W) scaled base convolution, folded into the final store
         weights: per level, (C*4, 1, K, K)
         scales: per level, (1, C*4, 1, 1)
-        kernel_size: K (odd, <= 9)
+        kernel_size: K (odd, <= 7)
 
     Returns:
         (B, C, H, W)
@@ -562,37 +555,31 @@ def haar2d(x: torch.Tensor) -> torch.Tensor:
 
 def _depthwise_grad_weight(input, grad_output, weight, padding, groups):
     """
-    Weight gradient of a depthwise conv, via a dedicated kernel when the layer
-    is the shape WTConv's base conv always is (depthwise, stride 1, 'same'
-    padding, odd K); otherwise cuDNN.
+    Weight gradient of a depthwise conv, via the dedicated kernel. The layer must
+    be the shape WTConv's base conv always is: depthwise, stride 1, 'same'
+    padding, odd K <= MAX_KERNEL_SIZE.
     """
     C, K = weight.shape[0], weight.shape[2]
-    mod = _get_module()
-    usable = (
-        FUSED_WEIGHT_GRAD
-        and groups == C
-        and weight.shape[1] == 1
-        and weight.shape[3] == K
-        and K % 2 == 1
-        and K <= mod.depthwise_grad_weight_max_k()
-        and padding == K // 2
-        and input.is_contiguous()
-        and input.shape[2:] == grad_output.shape[2:]
-    )
-    if not usable:
-        return torch.nn.grad.conv2d_weight(
-            input, weight.shape, grad_output, padding=padding, groups=groups
-        )
+    assert groups == C and weight.shape[1] == 1, \
+        f"conv must be depthwise, got groups={groups} for {tuple(weight.shape)}"
+    assert weight.shape[3] == K, "kernel must be square"
+    assert K % 2 == 1 and K <= MAX_KERNEL_SIZE, \
+        f"kernel_size must be odd and <= {MAX_KERNEL_SIZE}, got {K}"
+    assert padding == K // 2, f"conv must use 'same' padding, got {padding} for K={K}"
+    assert input.shape[2:] == grad_output.shape[2:], "conv must be stride 1"
 
     grad_w = torch.zeros(C, K, K, device=input.device, dtype=torch.float32)
-    mod.depthwise_grad_weight(input, grad_output.contiguous(), grad_w)
+    _get_module().depthwise_grad_weight(
+        input.contiguous(), grad_output.contiguous(), grad_w
+    )
     return grad_w.reshape(C, 1, K, K).to(weight.dtype)
 
 
 class ScaledDepthwiseConvFunction(Function):
     """
     y = scale * conv2d(x, weight, bias), computed as conv2d(x, scale*weight,
-    scale*bias) so cuDNN handles both directions.
+    scale*bias) so cuDNN handles the forward and the input gradient; the weight
+    gradient goes through the dedicated depthwise kernel.
     """
 
     @staticmethod

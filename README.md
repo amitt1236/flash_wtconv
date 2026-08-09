@@ -44,7 +44,7 @@ Measured on an RTX A6000, fp32, K=3, forward+backward against the original imple
 
 Activation memory drops ~2.7x against the original, since no coefficient tensor is ever materialised.
 
-Fused weight gradients vs the cuDNN grouped weight gradient they replace (K=5, whole layer forward+backward, toggled with `cuda_haar.haar_cuda.FUSED_WEIGHT_GRAD`):
+Fused weight gradients vs the cuDNN grouped weight gradient they replace (K=5, whole layer forward+backward):
 
 | shape | wt_levels 1 | 3 | 5 |
 |-------|-------------|---|---|

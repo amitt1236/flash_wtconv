@@ -103,8 +103,6 @@ __global__ __launch_bounds__(DW_THREADS) void depthwise_grad_weight_kernel(
 // -----------------------------------------------------------------------------
 // Host wrapper
 // -----------------------------------------------------------------------------
-int depthwise_grad_weight_max_k() { return 9; }
-
 void depthwise_grad_weight(
     torch::Tensor input,          // (B, C, H, W)
     torch::Tensor grad_output,    // (B, C, H, W)
@@ -127,9 +125,8 @@ void depthwise_grad_weight(
                 "grad_weight must be (C, K, K)");
     const int K = (int)grad_weight.size(1);
     TORCH_CHECK(grad_weight.size(2) == K, "grad_weight must be square");
-    TORCH_CHECK(K % 2 == 1 && K <= depthwise_grad_weight_max_k(),
-                "kernel_size must be odd and <= ", depthwise_grad_weight_max_k(),
-                ", got ", K);
+    TORCH_CHECK(K % 2 == 1 && K <= HAAR_MAX_K,
+                "kernel_size must be odd and <= ", HAAR_MAX_K, ", got ", K);
 
     const int tiles_x = (W + DW_TILE_W - 1) / DW_TILE_W;
     const int tiles_y = (H + DW_TILE_H - 1) / DW_TILE_H;
@@ -157,7 +154,6 @@ void depthwise_grad_weight(
             case 3: DW_LAUNCH(scalar_t, 3); break;
             case 5: DW_LAUNCH(scalar_t, 5); break;
             case 7: DW_LAUNCH(scalar_t, 7); break;
-            case 9: DW_LAUNCH(scalar_t, 9); break;
             default: TORCH_CHECK(false, "unsupported kernel size ", K);
         }
     });

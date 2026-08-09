@@ -6,6 +6,8 @@ coefficients never touch memory. Mirrors the `triton_haar` API.
 """
 
 from .haar_cuda import (
+    # Largest kernel size the CUDA kernels are built for
+    MAX_KERNEL_SIZE,
     # Whole wavelet branch (fused Haar+conv+scale per level, fused inverse+add)
     wavelet_branch,
     # Fused Haar -> conv -> scale
@@ -36,6 +38,7 @@ from .haar_cuda import (
 )
 
 __all__ = [
+    'MAX_KERNEL_SIZE',
     'wavelet_branch',
     'fused_haar_conv_scale',
     'compute_scaled_weight',
