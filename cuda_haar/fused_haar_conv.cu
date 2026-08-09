@@ -500,9 +500,10 @@ void fused_haar_conv_backward(
 }
 
 // Register pressure caps the fused weight gradient: a thread holds K*K
-// accumulators, so beyond K=5 it would spill. Callers fall back to the
-// coefficient + cuDNN path there (see haar_cuda._grad_weight_scale).
-int fused_haar_grad_weight_max_k() { return 5; }
+// accumulators against the 64-register budget a 1024-thread block gets, which
+// K=7 just fits (64 registers, no spill) and K=9 does not. Callers fall back to
+// the coefficient + cuDNN path there (see haar_cuda._grad_weight_scale).
+int fused_haar_grad_weight_max_k() { return 7; }
 
 void fused_haar_grad_weight(
     torch::Tensor input,                       // (B, C, H, W), even dims
@@ -549,6 +550,9 @@ void fused_haar_grad_weight(
                         haar_cptr<scalar_t>(input), haar_cptr<scalar_t>(grad_output),
                         gwptr, B, C, H, W, H2, W2, tiles_x, tiles_area); break;
             case 5: fused_haar_grad_weight_kernel<scalar_t, 5><<<grid, block, 0, stream>>>(
+                        haar_cptr<scalar_t>(input), haar_cptr<scalar_t>(grad_output),
+                        gwptr, B, C, H, W, H2, W2, tiles_x, tiles_area); break;
+            case 7: fused_haar_grad_weight_kernel<scalar_t, 7><<<grid, block, 0, stream>>>(
                         haar_cptr<scalar_t>(input), haar_cptr<scalar_t>(grad_output),
                         gwptr, B, C, H, W, H2, W2, tiles_x, tiles_area); break;
             default: TORCH_CHECK(false, "unsupported kernel size ", K);
