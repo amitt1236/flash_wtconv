@@ -8,8 +8,6 @@ convolution weights, so the wavelet coefficients are never written to memory:
     ihaar2d_*_fused(levels..., add)              1-5 level inverse cascade + add
     scaled_depthwise_conv(x, w, s, pad, bias)    base-conv path (scale folded, cuDNN)
 
-The API mirrors `triton_haar` so the two backends are interchangeable.
-
 Layout conventions:
     coefficients   (B, C, 4, H/2, W/2) contiguous, subbands [LL, LH, HL, HH]
     conv weights   (C*4, 1, K, K), channel c*4+s holds subband s of channel c
@@ -52,28 +50,82 @@ _setup_cuda_arch()
 
 _module = None
 
-# Largest kernel size the CUDA kernels are instantiated for (see HAAR_MAX_K in
-# haar_common.cuh). Anything larger is rejected, not routed elsewhere.
-MAX_KERNEL_SIZE = 29
+# Hard ceiling of the kernels themselves (HAAR_K_LIMIT in haar_common.cuh): past
+# K = 29 their static shared memory exceeds the 48 KiB per-block limit.
+HARD_MAX_KERNEL_SIZE = 29
+
+# Default build ceiling. Every odd K up to the ceiling is instantiated for all
+# three dtypes, and the weight-gradient kernels hold K*K accumulators in a fully
+# unrolled register array, so compile time grows superlinearly in K: the whole
+# range up to 29 takes minutes. Nearly all use is K <= 7, so that is the default
+# and anything larger is an opt-in rebuild.
+DEFAULT_MAX_KERNEL_SIZE = 7
+
+
+def _read_max_kernel_size() -> int:
+    """Build ceiling from $HAAR_MAX_K, defaulting to DEFAULT_MAX_KERNEL_SIZE."""
+    raw = os.environ.get('HAAR_MAX_K')
+    if raw is None or raw == '':
+        return DEFAULT_MAX_KERNEL_SIZE
+    try:
+        k = int(raw)
+    except ValueError:
+        raise ValueError(f"HAAR_MAX_K must be an integer, got {raw!r}") from None
+    if k < 1 or k > HARD_MAX_KERNEL_SIZE or k % 2 == 0:
+        raise ValueError(
+            f"HAAR_MAX_K must be odd and in [1, {HARD_MAX_KERNEL_SIZE}], got {k}"
+        )
+    return k
+
+
+# Largest kernel size this build instantiates. Anything larger is rejected, not
+# routed elsewhere.
+MAX_KERNEL_SIZE = _read_max_kernel_size()
+
+
+def check_kernel_size(kernel_size: int) -> None:
+    """
+    Reject kernel sizes this build cannot run, naming the knob that fixes it.
+
+    Called before the extension is loaded, so asking for a K outside the build
+    fails at once instead of after a compile that cannot serve the request.
+    """
+    K = kernel_size
+    if K < 1 or K % 2 != 1:
+        raise ValueError(f"kernel_size must be odd and positive, got {K}")
+    if K > HARD_MAX_KERNEL_SIZE:
+        raise ValueError(
+            f"kernel_size must be <= {HARD_MAX_KERNEL_SIZE}, got {K}"
+        )
+    if K > MAX_KERNEL_SIZE:
+        raise ValueError(
+            f"kernel_size {K} was not compiled into this build "
+            f"(HAAR_MAX_K={MAX_KERNEL_SIZE}). Rerun with HAAR_MAX_K={K} to build "
+            f"it -- a one-time compile, cached separately per ceiling."
+        )
 
 
 def _get_module():
     global _module
     if _module is None:
         src_dir = Path(__file__).parent
-        print("Compiling fused Haar CUDA kernels...")
+        # Each ceiling gets its own cached build, so switching between them does
+        # not invalidate the others.
+        name = f'fused_wtconv_haar_k{MAX_KERNEL_SIZE}'
+        print(f"Compiling fused Haar CUDA kernels", flush=True)
         _module = load(
-            name='flash_wtconv_haar',
+            name=name,
             sources=[
                 str(src_dir / 'haar.cpp'),
                 str(src_dir / 'fused_haar_conv.cu'),
                 str(src_dir / 'ihaar_cascade.cu'),
                 str(src_dir / 'depthwise_grad.cu'),
             ],
-            extra_cuda_cflags=['-O3', '--use_fast_math'],
-            verbose=False,
+            extra_cuda_cflags=['-O3', '--use_fast_math',
+                               f'-DHAAR_MAX_K={MAX_KERNEL_SIZE}'],
+            verbose=bool(os.environ.get('HAAR_BUILD_VERBOSE')),
         )
-        print("Done.")
+        print("Done.", flush=True)
     return _module
 
 
@@ -162,8 +214,7 @@ class FusedHaarConvScaleFunction(Function):
         assert H % 2 == 0 and W % 2 == 0, \
             f"fused Haar conv needs even spatial dims, got {H}x{W} (pad first)"
         K = kernel_size
-        assert K % 2 == 1 and K <= MAX_KERNEL_SIZE, \
-            f"kernel_size must be odd and <= {MAX_KERNEL_SIZE}, got {K}"
+        check_kernel_size(K)
 
         x = x.contiguous()
         H2, W2 = H // 2, W // 2
@@ -228,7 +279,7 @@ def fused_haar_conv_scale(
         x: (B, C, H, W) with even H, W
         weight: (C*4, 1, K, K) depthwise conv weights
         scale: (1, C*4, 1, 1) per-channel scales
-        kernel_size: K (odd, <= 7)
+        kernel_size: K (odd, <= MAX_KERNEL_SIZE)
         return_ll: also return the raw LL subband (B, C, H/2, W/2), i.e. the
                    input of the next decomposition level, computed for free.
 
@@ -274,8 +325,7 @@ class WaveletBranchFunction(Function):
         assert len(scales) == num_levels
         assert x.is_cuda and x.dim() == 4, "input must be a 4D CUDA tensor"
         K = kernel_size
-        assert K % 2 == 1 and K <= MAX_KERNEL_SIZE, \
-            f"kernel_size must be odd and <= {MAX_KERNEL_SIZE}, got {K}"
+        check_kernel_size(K)
 
         mod = _get_module()
         B, C, H, W = x.shape
@@ -389,7 +439,7 @@ def wavelet_branch(
         base_out: (B, C, H, W) scaled base convolution, folded into the final store
         weights: per level, (C*4, 1, K, K)
         scales: per level, (1, C*4, 1, 1)
-        kernel_size: K (odd, <= 7)
+        kernel_size: K (odd, <= MAX_KERNEL_SIZE)
 
     Returns:
         (B, C, H, W)
@@ -563,8 +613,7 @@ def _depthwise_grad_weight(input, grad_output, weight, padding, groups):
     assert groups == C and weight.shape[1] == 1, \
         f"conv must be depthwise, got groups={groups} for {tuple(weight.shape)}"
     assert weight.shape[3] == K, "kernel must be square"
-    assert K % 2 == 1 and K <= MAX_KERNEL_SIZE, \
-        f"kernel_size must be odd and <= {MAX_KERNEL_SIZE}, got {K}"
+    check_kernel_size(K)
     assert padding == K // 2, f"conv must use 'same' padding, got {padding} for K={K}"
     assert input.shape[2:] == grad_output.shape[2:], "conv must be stride 1"
 

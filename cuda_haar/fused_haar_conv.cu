@@ -390,30 +390,10 @@ __global__ void haar_coeffs_kernel(
 // Host wrappers
 // =============================================================================
 
-#define FUSED_LAUNCH(KERNEL, T, K, ...)                                        \
-    KERNEL<T, K><<<grid, block, 0, stream>>>(__VA_ARGS__)
-
-// Instantiate for the odd kernel sizes WTConv uses.
-#define FUSED_DISPATCH_K(KERNEL, T, ...)                                       \
-    switch (K) {                                                               \
-        case  1: FUSED_LAUNCH(KERNEL, T,  1, __VA_ARGS__); break;              \
-        case  3: FUSED_LAUNCH(KERNEL, T,  3, __VA_ARGS__); break;              \
-        case  5: FUSED_LAUNCH(KERNEL, T,  5, __VA_ARGS__); break;              \
-        case  7: FUSED_LAUNCH(KERNEL, T,  7, __VA_ARGS__); break;              \
-        case  9: FUSED_LAUNCH(KERNEL, T,  9, __VA_ARGS__); break;              \
-        case 11: FUSED_LAUNCH(KERNEL, T, 11, __VA_ARGS__); break;              \
-        case 13: FUSED_LAUNCH(KERNEL, T, 13, __VA_ARGS__); break;              \
-        case 15: FUSED_LAUNCH(KERNEL, T, 15, __VA_ARGS__); break;              \
-        case 17: FUSED_LAUNCH(KERNEL, T, 17, __VA_ARGS__); break;              \
-        case 19: FUSED_LAUNCH(KERNEL, T, 19, __VA_ARGS__); break;              \
-        case 21: FUSED_LAUNCH(KERNEL, T, 21, __VA_ARGS__); break;              \
-        case 23: FUSED_LAUNCH(KERNEL, T, 23, __VA_ARGS__); break;              \
-        case 25: FUSED_LAUNCH(KERNEL, T, 25, __VA_ARGS__); break;              \
-        case 27: FUSED_LAUNCH(KERNEL, T, 27, __VA_ARGS__); break;              \
-        case 29: FUSED_LAUNCH(KERNEL, T, 29, __VA_ARGS__); break;              \
-        default: TORCH_CHECK(false, "kernel_size must be odd and <= ",         \
-                             HAAR_MAX_K, ", got ", K);                         \
-    }
+// Only the sizes this build asked for are instantiated; see HAAR_MAX_K.
+HAAR_DEFINE_LAUNCHER(fused_haar_conv_scale_kernel)
+HAAR_DEFINE_LAUNCHER(fused_haar_conv_scale_bwd_kernel)
+HAAR_DEFINE_LAUNCHER(fused_haar_grad_weight_kernel)
 
 // Validates shapes and returns the conv kernel size K taken from the fused
 // weight, which is always (C, 4, K, K).
@@ -430,8 +410,9 @@ static int check_fused_shapes(const torch::Tensor& x, const torch::Tensor& fused
                 "fused weight must be (C, 4, K, K)");
     const int K = (int)fused_w.size(2);
     TORCH_CHECK(fused_w.size(3) == K, "fused weight must be square");
-    TORCH_CHECK(K % 2 == 1 && K <= HAAR_MAX_K,
-                "kernel_size must be odd and <= ", HAAR_MAX_K, ", got ", K);
+    // Whether this K was compiled is the dispatch's business, not this check's.
+    TORCH_CHECK(K % 2 == 1 && K <= HAAR_K_LIMIT,
+                "kernel_size must be odd and <= ", HAAR_K_LIMIT, ", got ", K);
     return K;
 }
 
@@ -465,9 +446,9 @@ void fused_haar_conv_forward(
             TORCH_CHECK(ll_output->is_contiguous(), "ll_output must be contiguous");
             llp = haar_ptr<scalar_t>(*ll_output);
         }
-        FUSED_DISPATCH_K(fused_haar_conv_scale_kernel, scalar_t,
-                         haar_cptr<scalar_t>(input), wptr, haar_ptr<scalar_t>(output),
-                         llp, C, H, W, H2, W2, tiles_x, tiles_y);
+        HAAR_DISPATCH_K(fused_haar_conv_scale_kernel, scalar_t,
+                        haar_cptr<scalar_t>(input), wptr, haar_ptr<scalar_t>(output),
+                        llp, C, H, W, H2, W2, tiles_x, tiles_y);
     });
     AT_CUDA_CHECK(cudaGetLastError());
 }
@@ -504,9 +485,9 @@ void fused_haar_conv_backward(
             TORCH_CHECK(grad_ll->is_contiguous(), "grad_ll must be contiguous");
             gllp = haar_cptr<scalar_t>(*grad_ll);
         }
-        FUSED_DISPATCH_K(fused_haar_conv_scale_bwd_kernel, scalar_t,
-                         haar_cptr<scalar_t>(grad_output), gllp, wptr,
-                         haar_ptr<scalar_t>(grad_input), C, H, W, H2, W2, tiles_x, tiles_y);
+        HAAR_DISPATCH_K(fused_haar_conv_scale_bwd_kernel, scalar_t,
+                        haar_cptr<scalar_t>(grad_output), gllp, wptr,
+                        haar_ptr<scalar_t>(grad_input), C, H, W, H2, W2, tiles_x, tiles_y);
     });
     AT_CUDA_CHECK(cudaGetLastError());
 }
@@ -545,9 +526,9 @@ void fused_haar_grad_weight(
     float* gwptr = grad_fused_weight.data_ptr<float>();
 
     HAAR_DISPATCH_DTYPE(input, "fused_haar_grad_weight", [&] {
-        FUSED_DISPATCH_K(fused_haar_grad_weight_kernel, scalar_t,
-                         haar_cptr<scalar_t>(input), haar_cptr<scalar_t>(grad_output),
-                         gwptr, B, C, H, W, H2, W2, tiles_x, tiles_area);
+        HAAR_DISPATCH_K(fused_haar_grad_weight_kernel, scalar_t,
+                        haar_cptr<scalar_t>(input), haar_cptr<scalar_t>(grad_output),
+                        gwptr, B, C, H, W, H2, W2, tiles_x, tiles_area);
     });
     AT_CUDA_CHECK(cudaGetLastError());
 }

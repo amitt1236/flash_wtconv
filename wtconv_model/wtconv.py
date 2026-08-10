@@ -14,8 +14,9 @@ The whole wavelet branch is one autograd node (cuda_haar.wavelet_branch):
 The base convolution keeps its own scaled depthwise conv (cuDNN, with the scale
 folded into weight and bias).
 
-Numerics follow WTConv/wtconv/wtconv2d.py exactly, including the per-level zero
-padding of odd spatial sizes and the crop on reconstruction.
+Numerics follow the reference WTConv implementation of Finder et al. (2024)
+exactly, including the per-level zero padding of odd spatial sizes and the crop
+on reconstruction.
 """
 
 import math
@@ -25,6 +26,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
+# cuda_haar sits next to this file, so it is importable however this module is.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 _cuda_haar = None
@@ -44,7 +46,9 @@ class WTConv2d(nn.Module):
     Args:
         in_channels: Number of input/output channels (must be equal)
         out_channels: Must equal in_channels
-        kernel_size: Convolution kernel size, odd and <= 29 (default: 5)
+        kernel_size: Convolution kernel size, odd and <= 29 (default: 5). Sizes
+            above 7 need the kernels rebuilt with HAAR_MAX_K set (see README).
+        stride: Output stride, applied as average pooling (default: 1)
         wt_levels: Number of wavelet decomposition levels (1-5)
         bias: Include bias in base convolution (default: True)
     """
@@ -60,24 +64,23 @@ class WTConv2d(nn.Module):
     ):
         super().__init__()
 
+        self._haar = _get_haar_module()
+
         assert in_channels == out_channels, "WTConv2d requires in_channels == out_channels"
         assert wt_levels in [1, 2, 3, 4, 5], "wt_levels must be 1-5"
-        from cuda_haar.haar_cuda import MAX_KERNEL_SIZE
-        assert kernel_size % 2 == 1 and kernel_size <= MAX_KERNEL_SIZE, \
-            f"kernel_size must be odd and <= {MAX_KERNEL_SIZE}"
+        # Fails here, before anything is compiled, if this build has no such K.
+        self._haar.check_kernel_size(kernel_size)
 
         self.in_channels = in_channels
         self.wt_levels = wt_levels
         self.kernel_size = kernel_size
         self.stride = stride
 
-        # Stride support via average pooling (matches original implementation)
+        # Stride support via average pooling (matches the reference implementation)
         if stride > 1:
             self.do_stride = nn.AvgPool2d(kernel_size=1, stride=stride)
         else:
             self.do_stride = None
-
-        self._haar = _get_haar_module()
 
         # Base conv parameters (weights are plain tensors: they get fused with
         # base_scale before the convolution)

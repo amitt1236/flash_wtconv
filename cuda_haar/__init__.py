@@ -2,12 +2,15 @@
 Fused CUDA Haar kernels for WTConv.
 
 The Haar transform is fused into the depthwise convolution weights, so wavelet
-coefficients never touch memory. Mirrors the `triton_haar` API.
+coefficients never touch memory.
 """
 
 from .haar_cuda import (
-    # Largest kernel size the CUDA kernels are built for
+    # Largest kernel size this build is compiled for (see HAAR_MAX_K), the hard
+    # ceiling of the kernels themselves, and the check that reports the difference
     MAX_KERNEL_SIZE,
+    HARD_MAX_KERNEL_SIZE,
+    check_kernel_size,
     # Whole wavelet branch (fused Haar+conv+scale per level, fused inverse+add)
     wavelet_branch,
     # Fused Haar -> conv -> scale
@@ -39,6 +42,8 @@ from .haar_cuda import (
 
 __all__ = [
     'MAX_KERNEL_SIZE',
+    'HARD_MAX_KERNEL_SIZE',
+    'check_kernel_size',
     'wavelet_branch',
     'fused_haar_conv_scale',
     'compute_scaled_weight',

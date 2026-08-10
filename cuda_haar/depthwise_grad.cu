@@ -7,7 +7,7 @@
 // fused_haar_conv.cu, minus the Haar step -- it exists because WTConv's base
 // convolution is an ordinary depthwise conv, and cuDNN's grouped weight
 // gradient for depthwise layers was the most expensive kernel left in a
-// training step (18 ms of a 44 ms step at 16x32x512x512).
+// training step once the wavelet branch was fused.
 //
 // One block owns a channel and sweeps a long run of spatial tiles, holding K*K
 // accumulators per thread in registers; the haloed input tile is staged in
@@ -100,6 +100,9 @@ __global__ __launch_bounds__(DW_THREADS) void depthwise_grad_weight_kernel(
     }
 }
 
+// Only the sizes this build asked for are instantiated; see HAAR_MAX_K.
+HAAR_DEFINE_LAUNCHER(depthwise_grad_weight_kernel)
+
 // -----------------------------------------------------------------------------
 // Host wrapper
 // -----------------------------------------------------------------------------
@@ -125,8 +128,9 @@ void depthwise_grad_weight(
                 "grad_weight must be (C, K, K)");
     const int K = (int)grad_weight.size(1);
     TORCH_CHECK(grad_weight.size(2) == K, "grad_weight must be square");
-    TORCH_CHECK(K % 2 == 1 && K <= HAAR_MAX_K,
-                "kernel_size must be odd and <= ", HAAR_MAX_K, ", got ", K);
+    // Whether this K was compiled is the dispatch's business, not this check's.
+    TORCH_CHECK(K % 2 == 1 && K <= HAAR_K_LIMIT,
+                "kernel_size must be odd and <= ", HAAR_K_LIMIT, ", got ", K);
 
     const int tiles_x = (W + DW_TILE_W - 1) / DW_TILE_W;
     const int tiles_y = (H + DW_TILE_H - 1) / DW_TILE_H;
@@ -143,31 +147,10 @@ void depthwise_grad_weight(
     auto stream = at::cuda::getCurrentCUDAStream();
     float* gwptr = grad_weight.data_ptr<float>();
 
-#define DW_LAUNCH(T, KK)                                                        \
-    depthwise_grad_weight_kernel<T, KK><<<grid, block, 0, stream>>>(             \
-        haar_cptr<T>(input), haar_cptr<T>(grad_output), gwptr,                   \
-        B, C, H, W, tiles_x, tiles_area)
-
     HAAR_DISPATCH_DTYPE(input, "depthwise_grad_weight", [&] {
-        switch (K) {
-            case  1: DW_LAUNCH(scalar_t,  1); break;
-            case  3: DW_LAUNCH(scalar_t,  3); break;
-            case  5: DW_LAUNCH(scalar_t,  5); break;
-            case  7: DW_LAUNCH(scalar_t,  7); break;
-            case  9: DW_LAUNCH(scalar_t,  9); break;
-            case 11: DW_LAUNCH(scalar_t, 11); break;
-            case 13: DW_LAUNCH(scalar_t, 13); break;
-            case 15: DW_LAUNCH(scalar_t, 15); break;
-            case 17: DW_LAUNCH(scalar_t, 17); break;
-            case 19: DW_LAUNCH(scalar_t, 19); break;
-            case 21: DW_LAUNCH(scalar_t, 21); break;
-            case 23: DW_LAUNCH(scalar_t, 23); break;
-            case 25: DW_LAUNCH(scalar_t, 25); break;
-            case 27: DW_LAUNCH(scalar_t, 27); break;
-            case 29: DW_LAUNCH(scalar_t, 29); break;
-            default: TORCH_CHECK(false, "unsupported kernel size ", K);
-        }
+        HAAR_DISPATCH_K(depthwise_grad_weight_kernel, scalar_t,
+                        haar_cptr<scalar_t>(input), haar_cptr<scalar_t>(grad_output),
+                        gwptr, B, C, H, W, tiles_x, tiles_area);
     });
-#undef DW_LAUNCH
     AT_CUDA_CHECK(cudaGetLastError());
 }

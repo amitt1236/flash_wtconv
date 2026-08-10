@@ -173,7 +173,7 @@ def run_benchmark(device: str, dtype=torch.float32, iterations=50, use_compile=F
             WTConv2d, WTConv2dNaive = get_wtconv_classes()
             for name, Model in [("v2", WTConv2d)]:
                 x = torch.randn(B, C, H, W, device=device, dtype=dtype, requires_grad=True)
-                model = Model(C, C, kernel_size=3, wt_levels=depth, device=device).to(device).to(dtype)
+                model = Model(C, C, kernel_size=3, wt_levels=depth).to(device).to(dtype)
                 
                 # Enable torch.compile if requested
                 if use_compile:
