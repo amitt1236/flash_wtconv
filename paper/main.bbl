@@ -1,9 +1,32 @@
-\begin{thebibliography}{14}
+\begin{thebibliography}{15}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
   \providecommand{\doi}[1]{doi: #1}\else
   \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Ansel et~al.(2024)Ansel, Yang, He, Gimelshein, Jain, Voznesensky, Bao,
+  Bell, Berard, Burovski, Chauhan, Chourdia, Constable, Desmaison, DeVito,
+  Ellison, Feng, Gong, Gschwind, Hirsh, Huang, Kalambarkar, Kirsch, Lazos,
+  Lezcano, Liang, Liang, Lu, Luk, Maher, Pan, Puhrsch, Reso, Saroufim,
+  Siraichi, Suk, Suo, Tillet, Wang, Wang, Wen, Zhang, Zhao, Zhou, Zou, Mathews,
+  Chanan, Wu, and Chintala]{ansel2024pytorch2}
+Jason Ansel, Edward Yang, Horace He, Natalia Gimelshein, Animesh Jain, Michael
+  Voznesensky, Bin Bao, Peter Bell, David Berard, Evgeni Burovski, Geeta
+  Chauhan, Anjali Chourdia, Will Constable, Alban Desmaison, Zachary DeVito,
+  Elias Ellison, Will Feng, Jiong Gong, Michael Gschwind, Brian Hirsh, Sherlock
+  Huang, Kshiteej Kalambarkar, Laurent Kirsch, Michael Lazos, Mario Lezcano,
+  Yanbo Liang, Jason Liang, Yinghai Lu, C.~K. Luk, Bert Maher, Yunjie Pan,
+  Christian Puhrsch, Matthias Reso, Mark Saroufim, Marcos~Yukio Siraichi, Helen
+  Suk, Michael Suo, Phil Tillet, Eikan Wang, Xiaodong Wang, William Wen,
+  Shunting Zhang, Xu~Zhao, Keren Zhou, Richard Zou, Ajit Mathews, Gregory
+  Chanan, Peng Wu, and Soumith Chintala.
+\newblock {PyTorch 2}: Faster machine learning through dynamic {P}ython
+  bytecode transformation and graph compilation.
+\newblock In \emph{Proceedings of the 29th ACM International Conference on
+  Architectural Support for Programming Languages and Operating Systems
+  (ASPLOS)}, pp.\  929--947, 2024.
+\newblock \doi{10.1145/3620665.3640366}.
 
 \bibitem[Chen et~al.(2018)Chen, Moreau, Jiang, Zheng, Yan, Shen, Cowan, Wang,
   Hu, Ceze, Guestrin, and Krishnamurthy]{chen2018tvm}

@@ -328,7 +328,7 @@ Comparing this to the reference memory traffic $\Qio_{\mathrm{ref}}$ (\autoref{e
 \end{equation}
 As $L \to \infty$, the fused formulation achieves up to a $2.56\times$ reduction in memory traffic over the reference implementation. \autoref{tab:traffic} summarizes the exact element counts and traffic reduction ratios for decomposition levels $L{=}1,\dots,5$. Like \autoref{eq:qref}, neither count depends on $k$, so the traffic argument of this section is stated once and holds at every kernel size; \autoref{sec:results-kernel-size} verifies this empirically at $k{=}3$.
 
-Both counts are predictions, and we test them directly. \autoref{app:traffic} measures the traffic of both implementations with hardware performance counters and finds \autoref{eq:qfused} exact to within $1\%$ at every level, shape and kernel size tested, and \autoref{eq:qref} exact to within $4\%$.
+We test both predictions using hardware performance counters in \autoref{app:traffic}. Under the modeled access pattern, the fused and reference traffic agree with their predictions within $1\%$ and $4\%$, respectively. Across tensor shapes, fused traffic remains within $5\%$ of the prediction, whereas the reference can exceed it by up to $39\%$ when cuDNN selects kernels with additional DRAM accesses. Thus, $\Qio_{\mathrm{ref}}$ should be interpreted as algorithmic traffic and, under such dispatches, as a lower bound.
 
 \begin{table}[h]
 \centering
