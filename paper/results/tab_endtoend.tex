@@ -9,21 +9,21 @@
 \begin{table}[t]
 \centering
 \caption{End-to-end network throughput and peak allocated GPU memory, for a
-forward pass and for a full training step (forward, backward).}
+forward pass and for a full training step (forward and backward).}
 \label{tab:endtoend}
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{llcccc}
 \toprule
  & & ConvNeXt-T & \multicolumn{2}{c}{WTConvNeXt-T} & Fused / \\
 \cmidrule(lr){4-5}
- & & (depthwise) & reference & \textbf{fused} & reference \\
+ & & (depthwise) & reference & fused & reference \\
 \midrule
 \multirow{2}{*}{Inference}
  & Throughput (img/s) $\uparrow$ & $1394.9$ & $420.7$ ($0.30\times$) & $988.5$ ($0.71\times$) & $2.35\times$ \\
  & Peak memory (MiB) $\downarrow$ & $596.8$ & $887.4$ ($1.49\times$) & $750.8$ ($1.26\times$) & $0.85\times$ \\
 \addlinespace[3pt]
 \multirow{2}{*}{Training step}
- & Throughput (img/s) $\uparrow$ & $247.7$ & $166.3$ ($0.67\times$) & $\mathbf{263.0}$ ($\mathbf{1.06\times}$) & $1.58\times$ \\
+ & Throughput (img/s) $\uparrow$ & $247.7$ & $166.3$ ($0.67\times$) & $263.0$ ($1.06\times$) & $1.58\times$ \\
  & Peak memory (MiB) $\downarrow$ & $6933.2$ & $9685.6$ ($1.40\times$) & $7618.4$ ($1.10\times$) & $0.79\times$ \\
 \bottomrule
 \end{tabular}
