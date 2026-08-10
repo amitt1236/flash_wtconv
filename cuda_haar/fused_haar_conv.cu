@@ -396,10 +396,21 @@ __global__ void haar_coeffs_kernel(
 // Instantiate for the odd kernel sizes WTConv uses.
 #define FUSED_DISPATCH_K(KERNEL, T, ...)                                       \
     switch (K) {                                                               \
-        case 1: FUSED_LAUNCH(KERNEL, T, 1, __VA_ARGS__); break;                \
-        case 3: FUSED_LAUNCH(KERNEL, T, 3, __VA_ARGS__); break;                \
-        case 5: FUSED_LAUNCH(KERNEL, T, 5, __VA_ARGS__); break;                \
-        case 7: FUSED_LAUNCH(KERNEL, T, 7, __VA_ARGS__); break;                \
+        case  1: FUSED_LAUNCH(KERNEL, T,  1, __VA_ARGS__); break;              \
+        case  3: FUSED_LAUNCH(KERNEL, T,  3, __VA_ARGS__); break;              \
+        case  5: FUSED_LAUNCH(KERNEL, T,  5, __VA_ARGS__); break;              \
+        case  7: FUSED_LAUNCH(KERNEL, T,  7, __VA_ARGS__); break;              \
+        case  9: FUSED_LAUNCH(KERNEL, T,  9, __VA_ARGS__); break;              \
+        case 11: FUSED_LAUNCH(KERNEL, T, 11, __VA_ARGS__); break;              \
+        case 13: FUSED_LAUNCH(KERNEL, T, 13, __VA_ARGS__); break;              \
+        case 15: FUSED_LAUNCH(KERNEL, T, 15, __VA_ARGS__); break;              \
+        case 17: FUSED_LAUNCH(KERNEL, T, 17, __VA_ARGS__); break;              \
+        case 19: FUSED_LAUNCH(KERNEL, T, 19, __VA_ARGS__); break;              \
+        case 21: FUSED_LAUNCH(KERNEL, T, 21, __VA_ARGS__); break;              \
+        case 23: FUSED_LAUNCH(KERNEL, T, 23, __VA_ARGS__); break;              \
+        case 25: FUSED_LAUNCH(KERNEL, T, 25, __VA_ARGS__); break;              \
+        case 27: FUSED_LAUNCH(KERNEL, T, 27, __VA_ARGS__); break;              \
+        case 29: FUSED_LAUNCH(KERNEL, T, 29, __VA_ARGS__); break;              \
         default: TORCH_CHECK(false, "kernel_size must be odd and <= ",         \
                              HAAR_MAX_K, ", got ", K);                         \
     }

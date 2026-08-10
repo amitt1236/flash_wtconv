@@ -25,7 +25,13 @@
 // kernel here holds K*K (or a haloed (TILE + K - 1)^2 tile) per thread or block,
 // so K = 7 is where the register and shared-memory budgets still allow a useful
 // occupancy. There is no path above it -- larger K is rejected, not fallen back.
-#define HAAR_MAX_K 7
+//
+// K = 29 is the hard ceiling: the forward/grad-input kernels stage
+// 16*(2K^2 + 38K + 217) bytes of static shared memory, which is 48016 B at
+// K = 29 and 53072 B at K = 31 -- past the 48 KiB per-block static limit. Those
+// compile fine and then fail at launch with cudaErrorInvalidArgument, so the
+// dispatch below must not instantiate beyond 29.
+#define HAAR_MAX_K 29
 
 // -----------------------------------------------------------------------------
 // Type conversion helpers (compute always happens in fp32)

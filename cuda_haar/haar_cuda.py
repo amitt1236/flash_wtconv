@@ -54,7 +54,7 @@ _module = None
 
 # Largest kernel size the CUDA kernels are instantiated for (see HAAR_MAX_K in
 # haar_common.cuh). Anything larger is rejected, not routed elsewhere.
-MAX_KERNEL_SIZE = 7
+MAX_KERNEL_SIZE = 29
 
 
 def _get_module():

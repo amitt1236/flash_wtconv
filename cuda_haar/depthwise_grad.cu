@@ -150,10 +150,21 @@ void depthwise_grad_weight(
 
     HAAR_DISPATCH_DTYPE(input, "depthwise_grad_weight", [&] {
         switch (K) {
-            case 1: DW_LAUNCH(scalar_t, 1); break;
-            case 3: DW_LAUNCH(scalar_t, 3); break;
-            case 5: DW_LAUNCH(scalar_t, 5); break;
-            case 7: DW_LAUNCH(scalar_t, 7); break;
+            case  1: DW_LAUNCH(scalar_t,  1); break;
+            case  3: DW_LAUNCH(scalar_t,  3); break;
+            case  5: DW_LAUNCH(scalar_t,  5); break;
+            case  7: DW_LAUNCH(scalar_t,  7); break;
+            case  9: DW_LAUNCH(scalar_t,  9); break;
+            case 11: DW_LAUNCH(scalar_t, 11); break;
+            case 13: DW_LAUNCH(scalar_t, 13); break;
+            case 15: DW_LAUNCH(scalar_t, 15); break;
+            case 17: DW_LAUNCH(scalar_t, 17); break;
+            case 19: DW_LAUNCH(scalar_t, 19); break;
+            case 21: DW_LAUNCH(scalar_t, 21); break;
+            case 23: DW_LAUNCH(scalar_t, 23); break;
+            case 25: DW_LAUNCH(scalar_t, 25); break;
+            case 27: DW_LAUNCH(scalar_t, 27); break;
+            case 29: DW_LAUNCH(scalar_t, 29); break;
             default: TORCH_CHECK(false, "unsupported kernel size ", K);
         }
     });

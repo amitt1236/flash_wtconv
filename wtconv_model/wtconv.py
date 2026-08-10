@@ -44,7 +44,7 @@ class WTConv2d(nn.Module):
     Args:
         in_channels: Number of input/output channels (must be equal)
         out_channels: Must equal in_channels
-        kernel_size: Convolution kernel size, odd and <= 7 (default: 5)
+        kernel_size: Convolution kernel size, odd and <= 29 (default: 5)
         wt_levels: Number of wavelet decomposition levels (1-5)
         bias: Include bias in base convolution (default: True)
     """
@@ -62,8 +62,9 @@ class WTConv2d(nn.Module):
 
         assert in_channels == out_channels, "WTConv2d requires in_channels == out_channels"
         assert wt_levels in [1, 2, 3, 4, 5], "wt_levels must be 1-5"
-        assert kernel_size % 2 == 1 and kernel_size <= 7, \
-            "kernel_size must be odd and <= 7"
+        from cuda_haar.haar_cuda import MAX_KERNEL_SIZE
+        assert kernel_size % 2 == 1 and kernel_size <= MAX_KERNEL_SIZE, \
+            f"kernel_size must be odd and <= {MAX_KERNEL_SIZE}"
 
         self.in_channels = in_channels
         self.wt_levels = wt_levels
