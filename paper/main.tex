@@ -99,7 +99,7 @@ We show that the discrepancy arises because FLOPs are the wrong cost model for t
 
 This observation suggests a different optimization target: rather than reducing arithmetic, we reformulate WTConv so that mathematical intermediates need not become memory-resident intermediates. We exploit three properties of the operator. First, Haar analysis is a multiplication-free butterfly and can be recomputed on chip inside the depthwise convolution. Second, linearity of Haar synthesis allows the entire $L$-level reconstruction recursion to be written as a single closed-form sum whose signs and coefficient addresses are determined by bits of the output coordinate. Third, the learned per-channel scales can be folded into the convolution weights. Together, these transformations preserve the same mathematical operator while eliminating the large intermediate tensors responsible for the majority of its data movement. The resulting formulation reduces modeled HBM traffic by $2.54$--$2.56\times$ for $L=1,\ldots,5$.
 
-We implement this formulation in CUDA and evaluate both inference and full training steps over a broad sweep of tensor shapes, decomposition levels, and precisions. For a full training step, the implementation is $3.71$--$4.35\times$ faster than the reference in \texttt{fp32} and $2.68$--$3.09\times$ faster in \texttt{fp16}, while reducing peak memory by a factor of $1.83$--$2.31$. More importantly, the systems reformulation reverses the practical comparison that motivates the work: over a training step the optimized WTConv is $1.27$--$1.50\times$ faster in \texttt{fp32} and $1.40$--$1.76\times$ faster in \texttt{fp16} than the depthwise $7\times7$ convolution it is proposed to replace, at every decomposition level tested. Training is the regime in which the comparison matters most, since it is where the materialized intermediates are both written and re-traversed; at inference the reversal is complete in \texttt{fp16} but not in \texttt{fp32}, where the fused layer remains within $3$--$17\%$ of the depthwise baseline rather than ahead of it (\autoref{sec:results-latency-inference}).
+We implement this formulation in CUDA and evaluate both inference and full training steps over a broad sweep of tensor shapes, decomposition levels, and precisions. For a full training step, the implementation is $3.71$--$4.35\times$ faster than the reference in \texttt{fp32} and $2.68$--$3.09\times$ faster in \texttt{fp16}, while reducing peak memory by a factor of $1.83$--$2.31$. More importantly, the systems reformulation reverses the practical comparison that motivates the work: over a training step the optimized WTConv at $k{=}5$ is $1.27$--$1.50\times$ faster in \texttt{fp32} and $1.40$--$1.76\times$ faster in \texttt{fp16} than the depthwise $7\times7$ convolution it is proposed to replace, at every decomposition level tested. Training is the regime in which the comparison matters most, since it is where the materialized intermediates are both written and re-traversed; at inference the reversal is complete in \texttt{fp16} but not in \texttt{fp32}, where the fused layer remains within $3$--$17\%$ of the depthwise baseline rather than ahead of it (\autoref{sec:results-latency-inference}).
 
 \paragraph{Contributions.}
 \begin{itemize}\itemsep2pt
@@ -728,6 +728,93 @@ described in \autoref{app:traffic-bad}.
 
 \section{Supplementary measurements}
 \label{app:extra}
+
+\subsection{Absolute layer timings}
+
+\autoref{tab:absolute-k5} and \autoref{tab:absolute-k3} report the absolute
+latencies underlying the ratios in \autoref{tab:latency-train},
+\autoref{tab:latency}, and \autoref{tab:k3}. Each entry is the geometric mean
+over the nine $(C,H)$ configurations in \autoref{sec:setup} of the mean latency
+from 50 timed iterations. Consequently, before the displayed values are
+rounded, dividing a reference entry by another entry reproduces the
+corresponding geometric-mean speedup in the main paper. Plain convolutions do
+not depend on $L$, so their measured latency is repeated across the five
+columns.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Absolute latency in milliseconds for the $k{=}5$ sweep. WTConv uses
+$k{=}5$ throughout. The depthwise $k{=}5$ row is the matched-kernel baseline,
+and the depthwise $k{=}7$ row is the ConvNeXt drop-in baseline.}
+\label{tab:absolute-k5}
+\begin{tabular}{llccccc}
+\toprule
+\multirow{2}{*}{Method} & \multirow{2}{*}{Precision} & \multicolumn{5}{c}{Decomposition levels $L$} \\
+\cmidrule(lr){3-7}
+ & & 1 & 2 & 3 & 4 & 5 \\
+\midrule
+\multicolumn{7}{l}{\textit{Forward pass}} \\
+\addlinespace[2pt]
+Depthwise conv, $k{=}5$ & \texttt{fp32} & 1.154 & 1.154 & 1.154 & 1.154 & 1.154 \\
+ & \texttt{fp16} & 0.479 & 0.479 & 0.479 & 0.479 & 0.479 \\
+\addlinespace[2pt]
+Depthwise conv, $k{=}7$ & \texttt{fp32} & 2.237 & 2.237 & 2.237 & 2.237 & 2.237 \\
+ & \texttt{fp16} & 2.291 & 2.291 & 2.291 & 2.291 & 2.291 \\
+\addlinespace[2pt]
+WTConv, reference & \texttt{fp32} & 8.487 & 10.710 & 11.387 & 11.652 & 11.815 \\
+ & \texttt{fp16} & 4.689 & 5.723 & 6.004 & 6.104 & 6.174 \\
+\addlinespace[2pt]
+WTConv, \textbf{fused} & \texttt{fp32} & 2.312 & 2.552 & 2.634 & 2.681 & 2.703 \\
+ & \texttt{fp16} & 1.389 & 1.592 & 1.668 & 1.710 & 1.748 \\
+\midrule
+\multicolumn{7}{l}{\textit{Training step (forward and backward)}} \\
+\addlinespace[2pt]
+Depthwise conv, $k{=}5$ & \texttt{fp32} & 5.913 & 5.913 & 5.913 & 5.913 & 5.913 \\
+ & \texttt{fp16} & 2.289 & 2.289 & 2.289 & 2.289 & 2.289 \\
+\addlinespace[2pt]
+Depthwise conv, $k{=}7$ & \texttt{fp32} & 11.737 & 11.737 & 11.737 & 11.737 & 11.737 \\
+ & \texttt{fp16} & 9.417 & 9.417 & 9.417 & 9.417 & 9.417 \\
+\addlinespace[2pt]
+WTConv, reference & \texttt{fp32} & 28.901 & 36.738 & 39.036 & 39.854 & 40.163 \\
+ & \texttt{fp16} & 14.362 & 18.592 & 19.842 & 20.366 & 20.758 \\
+\addlinespace[2pt]
+WTConv, \textbf{fused} & \texttt{fp32} & 7.800 & 8.693 & 8.995 & 9.154 & 9.277 \\
+ & \texttt{fp16} & 5.365 & 6.148 & 6.442 & 6.600 & 6.733 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Absolute latency in milliseconds for the reference and fused WTConv
+implementations in the $k{=}3$ sweep.}
+\label{tab:absolute-k3}
+\begin{tabular}{llccccc}
+\toprule
+\multirow{2}{*}{Method} & \multirow{2}{*}{Precision} & \multicolumn{5}{c}{Decomposition levels $L$} \\
+\cmidrule(lr){3-7}
+ & & 1 & 2 & 3 & 4 & 5 \\
+\midrule
+\multicolumn{7}{l}{\textit{Forward pass}} \\
+\addlinespace[2pt]
+WTConv, reference & \texttt{fp32} & 7.474 & 9.506 & 10.198 & 10.449 & 10.651 \\
+ & \texttt{fp16} & 4.529 & 5.552 & 5.834 & 5.940 & 5.999 \\
+\addlinespace[2pt]
+WTConv, \textbf{fused} & \texttt{fp32} & 1.667 & 1.880 & 1.945 & 1.979 & 2.001 \\
+ & \texttt{fp16} & 1.029 & 1.155 & 1.205 & 1.234 & 1.258 \\
+\midrule
+\multicolumn{7}{l}{\textit{Training step (forward and backward)}} \\
+\addlinespace[2pt]
+WTConv, reference & \texttt{fp32} & 23.462 & 31.003 & 33.036 & 33.845 & 34.315 \\
+ & \texttt{fp16} & 12.955 & 17.093 & 18.310 & 18.821 & 19.186 \\
+\addlinespace[2pt]
+WTConv, \textbf{fused} & \texttt{fp32} & 6.081 & 6.891 & 7.135 & 7.248 & 7.332 \\
+ & \texttt{fp16} & 3.908 & 4.470 & 4.665 & 4.773 & 4.870 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \autoref{tab:correctness} quantifies the numerical agreement referenced in
 \autoref{sec:setup}. 
