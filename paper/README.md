@@ -70,6 +70,23 @@ versions, captured automatically).
 `results/bench_cuda_k3.json` is a retained earlier sweep at `k=3`, kept only as
 an ablation; the paper reports `k=5`, the kernel size WTConvNeXt uses.
 
+To regenerate the cross-hardware validation table (`tab_hardware.tex`), repeat
+the layer sweep on a second GPU and pass it to `make_tables.py` alongside the
+primary run:
+
+```bash
+CUDA_VISIBLE_DEVICES=<other-gpu-index> python bench.py --device cuda --protocol both --mode both \
+                      --out ../results/bench_cuda_rtxpro6000.json
+python make_tables.py --bench ../results/bench_cuda.json \
+                      --correctness ../results/correctness.json \
+                      --bench-hardware ../results/bench_cuda_rtxpro6000.json
+```
+
+`--bench-hardware` takes a single self-contained bench JSON (reference and
+fused measured on the same device) and is otherwise independent of `--bench`:
+the two are never merged row-for-row, so the second GPU's numbers cannot leak
+into the primary tables.
+
 ## Scope note
 
 `bench.py` is CUDA-only and compares four methods: `depthwise`, `dense`,

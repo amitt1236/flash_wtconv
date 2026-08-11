@@ -356,10 +356,10 @@ Traffic reduction factor & $2.54\times$ & $2.55\times$ & $2.56\times$ & $2.56\ti
 \subsection{Setup}
 \label{sec:setup}
 
-All measurements are single-layer microbenchmarks on an RTX~A6000, except the end-to-end networks in \autoref{sec:results-endtoend}. We sweep $C\in\{32,64,128\}$, $H=W\in\{128,256,512\}$ at $B{=}8$, and $L\in\{1,\dots,5\}$ in \texttt{fp32} and \texttt{fp16}. Timings are averaged over 50 iterations following 20 warm-up iterations.
+All measurements are single-layer microbenchmarks on an RTX~A6000, except the end-to-end networks in \autoref{sec:results-endtoend} and the cross-hardware validation in \autoref{sec:results-hardware}, which repeats the layer sweep on a second, architecturally different GPU. We sweep $C\in\{32,64,128\}$, $H=W\in\{128,256,512\}$ at $B{=}8$, and $L\in\{1,\dots,5\}$ in \texttt{fp32} and \texttt{fp16}. Timings are averaged over 50 iterations following 20 warm-up iterations.
 
 \paragraph{Baselines.} WTConv (reference and fused) runs at $k{=}5$ throughout
-\autoref{sec:results-latency-train} and \autoref{sec:results-memory}; \autoref{sec:results-kernel-size} repeats the sweep at $k{=}3$. We evaluate plain depthwise convolutions under two protocols: \emph{matched} ($k{=}5$) to isolate wavelet overhead, and \emph{drop-in} ($k{=}7$) representing the standard ConvNeXt replacement \citep{liu2022convnext}.
+\autoref{sec:results-latency-train} and \autoref{sec:results-memory}; \autoref{sec:results-kernel-size} repeats the sweep at $k{=}3$, and \autoref{sec:results-hardware} repeats it at $k{=}5$ on a second GPU. We evaluate plain depthwise convolutions under two protocols: \emph{matched} ($k{=}5$) to isolate wavelet overhead, and \emph{drop-in} ($k{=}7$) representing the standard ConvNeXt replacement \citep{liu2022convnext}.
 
 \paragraph{Reporting.} Table values are the geometric mean over the $(C,H)$ sweep of the per-configuration ratio between the WTConv reference and the evaluated method. The reference is always $1.00\times$. Latency is reported as speedup (reference/method; higher is better) and memory as footprint fraction (method/reference; lower is better). \autoref{app:extra} verifies numerical agreement.
 \subsection{Layer latency}
@@ -458,6 +458,24 @@ $k{=}5$; inference is $4.48$--$5.32\times$ and $4.40$--$4.84\times$, against $3.
 and $3.38$--$3.60\times$. \autoref{sec:memorybound} predicts this direction. Shrinking the kernel
 removes arithmetic while leaving \autoref{eq:qref} untouched, so the reference falls further into
 the memory-bound regime.
+
+\subsection{Generality across hardware}
+\label{sec:results-hardware}
+
+\input{results/tab_hardware.tex}
+
+All preceding layer measurements use an RTX~A6000 (Ampere, sm\_86). To assess device dependence,
+\autoref{tab:hardware} repeats the $k{=}5$ sweep on an NVIDIA RTX~PRO~6000 Blackwell Max-Q
+Workstation Edition (sm\_120, $95$\,GiB HBM).
+
+The fused implementation remains faster for all $L$ and both precisions. Relative to the
+reference, training is $2.46$--$2.79\times$ faster in \texttt{fp32} and $1.95$--$2.42\times$ faster
+in \texttt{fp16}; inference is $2.87$--$3.05\times$ and $2.92$--$3.10\times$ faster, respectively.
+These gains are smaller than on the A6000, as expected from the roofline model: a fixed reduction
+in HBM traffic yields device-dependent speedups through the ridge point $I^\star$. Peak-memory
+reductions are stable across devices, since they are governed mainly by tensor materialization
+rather than GPU throughput, matching the A6000 trends at $0.40$--$0.55\times$ for training and
+$0.50$--$0.65\times$ for inference.
 
 \subsection{End-to-end networks}
 \label{sec:results-endtoend}

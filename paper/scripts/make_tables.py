@@ -15,11 +15,14 @@ Outputs (into --outdir, default ../results):
     per_config/tab_{speedup,memory}_<protocol>_<mode>_<dtype>.tex
     env.tex                 hardware/software line for the appendix
     macros.tex              every measured number the prose quotes
+    tab_hardware.tex        cross-hardware validation summary (--bench-hardware only)
+    env_hardware.tex        hardware/software line for the second GPU (--bench-hardware only)
 
 Usage
 -----
     python make_tables.py --bench ../results/bench_cuda.json \\
-                          --correctness ../results/correctness.json
+                          --correctness ../results/correctness.json \\
+                          --bench-hardware ../results/bench_cuda_rtxpro6000.json
 """
 
 from __future__ import annotations
@@ -431,7 +434,7 @@ def build_correctness(rep: dict, outdir: Path) -> None:
 # Environment + headline macros
 # =============================================================================
 
-def build_env(bench: dict, outdir: Path) -> None:
+def build_env(bench: dict, outdir: Path, filename: str = "env.tex") -> None:
     e = bench.get("env", {})
     parts = []
     if "gpu" in e:
@@ -443,8 +446,64 @@ def build_env(bench: dict, outdir: Path) -> None:
     if "cudnn" in e:
         parts.append(rf"cuDNN~{e['cudnn']}")
     # Trailing '%' so the file can be \input mid-sentence without adding a space.
-    (outdir / "env.tex").write_text(PREAMBLE + ", ".join(parts) + "%\n")
-    print(f"wrote {outdir / 'env.tex'}")
+    (outdir / filename).write_text(PREAMBLE + ", ".join(parts) + "%\n")
+    print(f"wrote {outdir / filename}")
+
+
+# =============================================================================
+# Cross-hardware validation table
+# =============================================================================
+
+def build_hardware_table(bench: dict, outdir: Path) -> None:
+    """
+    Compact speedup/memory summary for a second, self-contained bench JSON
+    (e.g. a different GPU), in the same Quantity x Precision x Level pivot
+    layout as the kernel-size ablation (tab_k3.tex), restricted to the fused
+    kernel against its own reference. Reuses the same ratio machinery as the
+    main combined tables so no number here is computed differently from those.
+    """
+    idx, axes = _index(bench)
+    if not axes["levels"]:
+        return
+    levels = axes["levels"]
+    dtypes = [d for d in ("fp32", "fp16") if d in axes["dtypes"]]
+    if not dtypes:
+        return
+
+    specs = [
+        ("Training-step speedup", "fwd_bwd", "latency_ms_mean", False),
+        ("Inference speedup", "fwd", "latency_ms_mean", False),
+        ("Peak memory, training", "fwd_bwd", "peak_mem_mib", True),
+        ("Peak memory, inference", "fwd", "peak_mem_mib", True),
+    ]
+
+    lines = [PREAMBLE, r"\begin{table}[t]", r"\centering",
+             r"\caption{The fused layer compared with the reference WTConv, both measured "
+             r"on the second GPU (\Cref{sec:results-hardware}), $k{=}5$. Latency is reported "
+             r"as speedup relative to the reference ($1.00\times$; higher is faster), and peak "
+             r"allocated memory as a fraction of the reference ($1.00\times$; lower is better).}",
+             r"\label{tab:hardware}",
+             r"\begin{tabular}{ll" + "c" * len(levels) + "}", r"\toprule",
+             r"\multirow{2}{*}{Quantity} & \multirow{2}{*}{Precision} & "
+             rf"\multicolumn{{{len(levels)}}}{{c}}{{Decomposition levels $L$}} \\",
+             rf"\cmidrule(lr){{3-{2 + len(levels)}}}",
+             " & & " + " & ".join(str(L) for L in levels) + r" \\", r"\midrule"]
+
+    for label, mode, field, invert in specs:
+        if mode not in axes["modes"]:
+            continue
+        for i, dtype in enumerate(dtypes):
+            vals = [_ratio_vs_reference(idx, axes, "fused_cuda", "homogeneous", mode,
+                                        dtype, L, field) for L in levels]
+            if invert:
+                vals = [_invert(v) for v in vals]
+            lines.append((label if i == 0 else "") + " & " + DTYPE_TEX[dtype] + " & "
+                         + " & ".join(_fmt(v) + r"$\times$" for v in vals) + r" \\")
+        lines.append(r"\addlinespace[2pt]")
+
+    lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}", ""]
+    (outdir / "tab_hardware.tex").write_text("\n".join(lines))
+    print(f"wrote {outdir / 'tab_hardware.tex'}")
 
 
 def _percentile(xs: list[float], q: float) -> float:
@@ -514,6 +573,9 @@ def main() -> None:
     p.add_argument("--bench", type=Path, action="append", default=None,
                    help="benchmark JSON; may be given more than once")
     p.add_argument("--correctness", type=Path)
+    p.add_argument("--bench-hardware", type=Path, default=None,
+                   help="optional second self-contained bench JSON (e.g. a different GPU) "
+                        "for the cross-hardware validation table (tab_hardware.tex)")
     p.add_argument("--outdir", type=Path, default=Path(__file__).resolve().parent.parent / "results")
     args = p.parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
@@ -536,6 +598,10 @@ def main() -> None:
         build_macros(merged, args.outdir)
     if args.correctness and args.correctness.exists():
         build_correctness(json.loads(args.correctness.read_text()), args.outdir)
+    if args.bench_hardware and args.bench_hardware.exists():
+        hw = json.loads(args.bench_hardware.read_text())
+        build_hardware_table(hw, args.outdir)
+        build_env(hw, args.outdir, filename="env_hardware.tex")
 
 
 if __name__ == "__main__":
