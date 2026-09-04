@@ -1,0 +1,37 @@
+\documentclass[11pt]{article}
+
+% --- Visuals: Mimic OpenReview Web Style ---
+\usepackage[margin=1in]{geometry}
+\usepackage{xcolor}
+\renewcommand{\familydefault}{\sfdefault} 
+
+% --- THE FIXES ---
+\usepackage{parskip} % Removes paragraph indentation and adds space between paragraphs
+\setcounter{secnumdepth}{0} % Removes numbering from all sections/headings (e.g., 1.1)
+
+% --- Markdown Package Setup ---
+\usepackage[
+    hybrid=true,          
+    pipeTables=true,      
+    fencedCode=true,      
+    hashEnumerators=true, 
+    smartEllipses=true,
+    underscores=false     
+]{markdown}
+
+\begin{document}
+
+\begin{markdown}
+We thank the reviewer for the thoughtful feedback and positive assessment of the paper. We are glad that the reviewer found both the I/O analysis and hardware validation convincing, and we address the remaining question below.
+
+**Q1: Why doesn't inference see the same relative end-to-end win as training?**
+
+We thank the reviewer for pointing this out. The key distinction is that the $1.06\times$ training result includes the backward pass, rather than representing a forward-path speedup. WTConvNeXt replaces ConvNeXt's single depthwise $7\times7$ convolution with a $5\times5$ WTConv that additionally performs multi-level Haar analysis, filtering, and reconstruction. Consequently, its forward path remains heavier even after most intermediate-memory traffic is removed.
+
+Training additionally benefits from our fused backward implementation. Rather than saving and later reloading the forward Haar coefficients, it recomputes the needed coefficients on chip and directly computes the corresponding gradients, reducing HBM traffic. These backward savings offset WTConv's additional forward cost, which is why the full training step can outperform the $7\times7$ depthwise baseline even though the forward pass alone does not.
+Accordingly, the layer benchmarks show that fused WTConv reaches only $0.83$--$0.97\times$ the speed of the $7\times7$ convolution in FP32 forward execution, but is $1.27$--$1.50\times$ faster for forward and backward together. This backward advantage offsets the remaining forward overhead during training; at inference, there is no backward pass to provide this benefit. 
+
+Importantly, the reformulation still provides a substantial inference improvement: end-to-end WTConvNeXt-T inference is $2.35\times$ faster than the reference WTConvNeXt-T implementation. The remaining $0.71\times$ gap is therefore relative to the simpler ConvNeXt forward path, rather than evidence that the proposed reformulation is ineffective at inference.
+\end{markdown}
+
+\end{document}

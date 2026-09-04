@@ -1,0 +1,34 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{xcolor}
+\renewcommand{\familydefault}{\sfdefault}
+\usepackage{parskip}
+\setcounter{secnumdepth}{0}
+\usepackage[
+    hybrid=true,
+    pipeTables=true,
+    fencedCode=true,
+    hashEnumerators=true,
+    smartEllipses=true,
+    underscores=false
+]{markdown}
+\usepackage{docmute}
+
+\newcommand{\filetitle}[1]{%
+    \section*{#1}%
+    \vspace{0.5em}%
+}
+
+\begin{document}
+
+\filetitle{JKBq}
+\input{JKBq.tex}
+\clearpage
+\filetitle{4vqy}
+\input{4vqy.tex}
+\clearpage
+\filetitle{gCwa}
+\input{gCwa.tex}
+
+\end{document}

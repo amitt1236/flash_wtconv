@@ -70,7 +70,7 @@
 
 % Authors are hidden by the tmlr package in submission mode. The block below
 % is rendered only under [accepted] or [preprint].
-\author{\name Amit Aflalo, \name Roy Amoyal, \name Shahaf E. Finder, \name Eran Treister, and \name Oren Freifeld\\
+\author{\name Amit Aflalo, \name Shahaf E. Finder, \name Roy Amoyal, \name Eran Treister, and \name Oren Freifeld\\
         \addr The Department of Computer Science, Ben-Gurion University of the Negev, Israel}
 
 \begin{document}
@@ -235,7 +235,7 @@ I_{\mathrm{ref}} \;=\; \frac{137.9N}{85.3N} \;\approx\; 1.63~\text{FLOP/byte}.
 \label{sec:method}
 %==============================================================================
 
-To eliminate the severe memory bottleneck of the reference WTConv, we derive an I/O-aware formulation based on three exact algebraic reformulations. These reformulations leave the underlying mathematical operator unchanged, differing from the reference implementation solely in floating-point evaluation order. Together, they eliminate all large intermediate subband tensors from high-bandwidth memory (HBM) by performing multi-stage computations directly in GPU registers and shared memory across all decomposition levels.
+To eliminate the severe memory bottleneck of the reference WTConv, we derive an I/O-aware formulation based on three exact algebraic reformulations. These reformulations leave the underlying mathematical operator unchanged, differing from the reference implementation solely in floating-point evaluation order. Together, they eliminate the unnecessary Haar-analysis and reconstruction intermediates from high-bandwidth memory (HBM) by performing multi-stage computations directly in GPU registers and shared memory across all decomposition levels.
 
 \subsection{Fusing Haar analysis with depthwise convolution}
 \label{sec:analysis}
@@ -361,6 +361,7 @@ All measurements are single-layer microbenchmarks on an RTX~A6000, except the en
 \paragraph{Baselines.} WTConv (reference and fused) runs at $k{=}5$ throughout
 \autoref{sec:results-latency-train} and \autoref{sec:results-memory}; \autoref{sec:results-kernel-size} repeats the sweep at $k{=}3$, and \autoref{sec:results-hardware} repeats it at $k{=}5$ on a second GPU. We evaluate plain depthwise convolutions under two protocols: \emph{matched} ($k{=}5$) to isolate wavelet overhead, and \emph{drop-in} ($k{=}7$) representing the standard ConvNeXt replacement \citep{liu2022convnext}.
 
+
 \paragraph{Reporting.} Table values are the geometric mean over the $(C,H)$ sweep of the per-configuration ratio between the WTConv reference and the evaluated method. The reference is always $1.00\times$. Latency is reported as speedup (reference/method; higher is better) and memory as footprint fraction (method/reference; lower is better). \autoref{app:extra} verifies numerical agreement.
 \subsection{Layer latency}
 \label{sec:results-latency-train}
@@ -459,6 +460,31 @@ and $3.38$--$3.60\times$. \autoref{sec:memorybound} predicts this direction. Shr
 removes arithmetic while leaving \autoref{eq:qref} untouched, so the reference falls further into
 the memory-bound regime.
 
+\subsection{End-to-end networks}
+\label{sec:results-endtoend}
+\input{results/tab_endtoend.tex}
+
+To evaluate the operator at architectural scale, we benchmark ConvNeXt-T and WTConvNeXt-T \citep{finder2024wavelet}, which replaces ConvNeXt-T's depthwise convolutions with WTConv ($k{=}5$, $L{\in}\{5,4,3,2\}$). We use a batch size of 64, $224\times224$ inputs, and \texttt{fp32}; \autoref{tab:endtoend} reports the results. Because the reformulation preserves the mathematical operator up to floating-point evaluation order, it does not alter the model architecture or learned parameters.
+
+The reference WTConv imposes a severe bottleneck, restricting the network to $30\%$ of ConvNeXt-T's inference throughput and $67\%$ of its training throughput. Our fused implementation effectively mitigates this, achieving $2.35\times$ and $1.58\times$ the reference's inference and training throughputs, respectively. Crucially, WTConvNeXt-T equipped with the fused layer trains $1.06\times$ faster than the baseline ConvNeXt-T, although inference throughput reaches only $0.71\times$ of the baseline.
+
+The fused formulation similarly reduces peak memory, cutting the reference WTConvNeXt-T's training and inference footprints to $0.79\times$ and $0.85\times$. This limits the network's peak memory to $1.10\times$ that of ConvNeXt-T during training and $1.26\times$ during inference.
+
+\subsection{Ablation of the reformulations}
+\label{sec:results-ablation}
+
+We evaluate the three reformulations cumulatively, in their order in \autoref{sec:method}. The first
+variant fuses Haar analysis, depthwise convolution, and scaling at each level. The second also
+replaces the sequential synthesis loop with the bit-indexed pass of \autoref{prop:bitindexed}. The
+full method further folds the base-path scale and fuses its addition into the final store. Each
+variant otherwise follows the reference \texttt{WTConv2d} implementation and is verified against
+its outputs and parameter gradients (\autoref{app:extra}). We measure full training steps at
+$k{=}5$ in \texttt{fp32}, using the $(C,H)$ sweep of \autoref{sec:setup}. The latency and peak-memory
+results are reported in \autoref{tab:ablation-latency} and \autoref{tab:ablation-memory}, respectively.
+
+\input{results/tab_ablation_latency.tex}
+\input{results/tab_ablation_memory.tex}
+
 \subsection{Generality across hardware}
 \label{sec:results-hardware}
 
@@ -466,26 +492,17 @@ the memory-bound regime.
 
 All preceding layer measurements use an RTX~A6000 (Ampere, sm\_86). To assess device dependence,
 \autoref{tab:hardware} repeats the $k{=}5$ sweep on an NVIDIA RTX~PRO~6000 Blackwell Max-Q
-Workstation Edition (sm\_120, $95$\,GiB HBM).
+Workstation Edition (sm\_120).
 
 The fused implementation remains faster for all $L$ and both precisions. Relative to the
 reference, training is $2.46$--$2.79\times$ faster in \texttt{fp32} and $1.95$--$2.42\times$ faster
 in \texttt{fp16}; inference is $2.87$--$3.05\times$ and $2.92$--$3.10\times$ faster, respectively.
-These gains are smaller than on the A6000, as expected from the roofline model: a fixed reduction
-in HBM traffic yields device-dependent speedups through the ridge point $I^\star$. Peak-memory
+The realized speedup is device-dependent even though both implementations remain well below the device’s roofline ridge point. Differences in achieved bandwidth, kernel dispatch, launch overhead, cache behavior, and kernel utilization are not captured by the tensor-traffic model. Peak-memory
 reductions are stable across devices, since they are governed mainly by tensor materialization
 rather than GPU throughput, matching the A6000 trends at $0.40$--$0.55\times$ for training and
 $0.50$--$0.65\times$ for inference.
 
-\subsection{End-to-end networks}
-\label{sec:results-endtoend}
 
-To evaluate the operator at architectural scale, we benchmark ConvNeXt-T and WTConvNeXt-T \citep{finder2024wavelet}, which replaces ConvNeXt-T's depthwise convolutions with WTConv ($k{=}5$, $L{\in}\{5,4,3,2\}$). We use a batch size of 64, $224\times224$ inputs, and \texttt{fp32}; \autoref{tab:endtoend} reports the results. Because the reformulation preserves the mathematical operator up to floating-point evaluation order, it does not alter the model architecture or learned parameters.
-
-The reference WTConv imposes a severe bottleneck, restricting the network to $30\%$ of ConvNeXt-T's inference throughput and $67\%$ of its training throughput. Our fused implementation effectively mitigates this, achieving $2.35\times$ and $1.58\times$ the reference's inference and training throughputs, respectively. Crucially, WTConvNeXt-T equipped with the fused layer trains $1.06\times$ faster than the baseline ConvNeXt-T, although inference throughput reaches only $0.71\times$ of the baseline.
-
-The fused formulation similarly reduces peak memory, cutting the reference WTConvNeXt-T's training and inference footprints to $0.79\times$ and $0.85\times$. This limits the network's peak memory to $1.10\times$ that of ConvNeXt-T during training and $1.26\times$ during inference.
-\input{results/tab_endtoend.tex}
 
 %==============================================================================
 
@@ -508,6 +525,7 @@ The broader lesson is that favorable FLOP counts and parameter scaling do not by
 \subsubsection*{Broader Impact Statement}
 This work reduces the time and memory required to evaluate an existing operator without changing its function; the primary effect is lower computational cost for practitioners already using WTConv. We do not identify application-specific ethical risks beyond the general risks associated with making computer-vision systems more computationally efficient.
 
+\clearpage
 \bibliography{main}
 \bibliographystyle{tmlr}
 

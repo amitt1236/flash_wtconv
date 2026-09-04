@@ -1,0 +1,41 @@
+\documentclass[11pt]{article}
+
+% --- Visuals: Mimic OpenReview Web Style ---
+\usepackage[margin=1in]{geometry}
+\usepackage{xcolor}
+\renewcommand{\familydefault}{\sfdefault} 
+
+% --- THE FIXES ---
+\usepackage{parskip} % Removes paragraph indentation and adds space between paragraphs
+\setcounter{secnumdepth}{0} % Removes numbering from all sections/headings (e.g., 1.1)
+
+% --- Markdown Package Setup ---
+\usepackage[
+    hybrid=true,          
+    pipeTables=true,      
+    fencedCode=true,      
+    hashEnumerators=true, 
+    smartEllipses=true,
+    underscores=false     
+]{markdown}
+
+\begin{document}
+
+\begin{markdown}
+
+We appreciate the reviewer’s recognition of the soundness of our analysis and would like to clarify that the paper does provide what we believe is a new way of implementing the multi-level Haar transform used by WTConv. While Algorithm 1 simply restates the reference WTConv operator of Finder et al. to establish the baseline computation, our new algorithmic formulation begins in Section 4, where we reformulate both the analysis and synthesis stages to reduce data movement.
+
+**Analysis.** We fuse Haar analysis directly with depthwise convolution: each $(2\times2)$ Haar block is computed once per output tile, kept on chip, and reused across convolution taps, so the wavelet coefficients are never materialized in HBM. This fused analysis primitive is not specific to WTConv and can be used more generally in models that apply Haar analysis followed by convolution.
+
+**Synthesis.** We replace the original $(L)-stage$ recursive reconstruction with the direct bit-indexed formulation of Proposition 2, where each output is computed directly from contributions across all levels. To the best of our knowledge, we are the first to collapse the recursive multi-level Haar synthesis cascade into a direct, closed-form, bit-indexed per-output computation.
+
+This reformulation is also a major source of the practical improvement: in our ablation at $(L=5)$, fused Haar analysis alone gives a $(1.44\times)$ training speedup, while adding the collapsed synthesis increases this to $(3.05\times)$.
+
+**Extension to analysis.** The same direct formulation can in principle be applied to multi-level analysis. However, for WTConv this is not the efficient choice: hierarchical analysis naturally reuses the progressively downsampled low-pass representation, whereas direct analysis would repeatedly aggregate increasingly large spatial regions. We therefore use fusion for forward analysis and the closed-form formulation for synthesis. Moreover, because Haar is symmetric and self-inverse, the adjoint of the direct synthesis naturally yields the corresponding multi-level analysis during backpropagation.
+
+**Relation to prior work.** There is precedent in the machine-learning community for treating I/O-aware reformulations of existing operators as algorithmic contributions. FlashAttention, published at NeurIPS 2022, is a prominent example: it does not change the attention operator itself, but reformulates how attention is evaluated so that large intermediate tensors need not be materialized in HBM, substantially improving practical efficiency. Our work follows the same general I/O-aware principle for the multi-level Haar wavelet transform underlying WTConv, deriving a different evaluation strategy that exploits the specific algebraic structure of Haar analysis and synthesis. We do not suggest that WTConv has the same impact as attention; however, WTConv is also far from a niche operator and has already seen substantial adoption in the literature, making its practical efficiency relevant to a meaningful part of the ML community.
+
+**In summary.** We therefore believe the work directly addresses the reviewer’s suggestion of “a new way of implementing the wavelet transform.” The contribution is an algorithmic reformulation of both analysis and synthesis, rather than merely a low-level CUDA optimization.
+\end{markdown}
+
+\end{document}
