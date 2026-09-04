@@ -18,6 +18,7 @@ Usage:
 """
 
 import argparse
+import json
 import time
 import sys
 import warnings
@@ -336,11 +337,13 @@ def get_cifar10_loaders(batch_size=32, img_size=256, num_workers=4, device=None,
 # ==============================================================================
 
 def train_one_epoch(model, loader, optimizer, criterion, device, scaler=None, amp_dtype=None):
-    """Train for one epoch, return average loss, accuracy, and throughput."""
+    """Train for one epoch and retain dynamic-loss-scaling behavior."""
     model.train()
     total_loss = 0.0
     correct = 0
     total = 0
+    skipped_updates = 0
+    initial_grad_scale = scaler.get_scale() if scaler is not None else None
     
     # Setup autocast context
     if amp_dtype is not None and device.type == 'cuda':
@@ -363,9 +366,12 @@ def train_one_epoch(model, loader, optimizer, criterion, device, scaler=None, am
             loss = criterion(outputs, targets)
         
         if scaler is not None:
+            scale_before = scaler.get_scale()
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
+            if scaler.get_scale() < scale_before:
+                skipped_updates += 1
         else:
             loss.backward()
             optimizer.step()
@@ -383,7 +389,9 @@ def train_one_epoch(model, loader, optimizer, criterion, device, scaler=None, am
     avg_loss = total_loss / total
     accuracy = 100.0 * correct / total
     throughput = total / elapsed  # images per second
-    return avg_loss, accuracy, throughput
+    final_grad_scale = scaler.get_scale() if scaler is not None else None
+    return (avg_loss, accuracy, throughput, initial_grad_scale,
+            final_grad_scale, skipped_updates)
 
 
 def validate_one_epoch(model, loader, criterion, device, amp_dtype=None):
@@ -426,17 +434,21 @@ def train_model(model, train_loader, val_loader, epochs, lr, device, verbose=Fal
     # Setup gradient scaler for fp16 (CUDA only)
     scaler = None
     if amp_dtype == torch.float16 and device.type == 'cuda':
-        scaler = torch.cuda.amp.GradScaler()
+        scaler = torch.amp.GradScaler('cuda')
     
     train_loss_history = []
     train_acc_history = []
     throughput_history = []
     val_loss_history = []
     val_acc_history = []
+    grad_scale_start_history = []
+    grad_scale_end_history = []
+    skipped_updates_history = []
     
     for epoch in range(epochs):
         # Training
-        train_loss, train_acc, throughput = train_one_epoch(
+        (train_loss, train_acc, throughput, grad_scale_start, grad_scale_end,
+         skipped_updates) = train_one_epoch(
             model, train_loader, optimizer, criterion, device, scaler, amp_dtype
         )
         train_loss_history.append(train_loss)
@@ -449,27 +461,42 @@ def train_model(model, train_loader, val_loader, epochs, lr, device, verbose=Fal
         )
         val_loss_history.append(val_loss)
         val_acc_history.append(val_acc)
+        grad_scale_start_history.append(grad_scale_start)
+        grad_scale_end_history.append(grad_scale_end)
+        skipped_updates_history.append(skipped_updates)
         
         if verbose:
-            print(f"  [{name}] Epoch {epoch+1:3d}: train_loss={train_loss:.4f}, train_acc={train_acc:.2f}%, val_loss={val_loss:.4f}, val_acc={val_acc:.2f}%, {throughput:.1f} img/s")
+            scale_text = (f", grad_scale={grad_scale_start:.0f}->{grad_scale_end:.0f}, "
+                          f"skipped_updates={skipped_updates}"
+                          if grad_scale_start is not None else "")
+            print(f"  [{name}] Epoch {epoch+1:3d}: train_loss={train_loss:.4f}, "
+                  f"train_acc={train_acc:.2f}%, val_loss={val_loss:.4f}, "
+                  f"val_acc={val_acc:.2f}%, {throughput:.1f} img/s{scale_text}")
         
         # Log to wandb
         if use_wandb:
-            wandb.log({
+            log_row = {
                 f"{name}/train_loss": train_loss,
                 f"{name}/train_acc": train_acc,
                 f"{name}/val_loss": val_loss,
                 f"{name}/val_acc": val_acc,
                 f"{name}/throughput": throughput,
+                f"{name}/skipped_updates": skipped_updates,
                 "epoch": epoch + 1,
-            })
+            }
+            if grad_scale_end is not None:
+                log_row[f"{name}/grad_scale"] = grad_scale_end
+            wandb.log(log_row)
     
     return {
         'train_loss': train_loss_history,
         'train_acc': train_acc_history,
         'val_loss': val_loss_history,
         'val_acc': val_acc_history,
-        'throughput': throughput_history
+        'throughput': throughput_history,
+        'grad_scale_start': grad_scale_start_history,
+        'grad_scale_end': grad_scale_end_history,
+        'skipped_updates': skipped_updates_history,
     }
 
 
@@ -601,6 +628,12 @@ def run_convergence_test(depth=2, epochs=10, batch_size=32,
     print(f"    Avg throughput (Fused): {avg_tp_fused:.1f} img/s")
     print(f"    Avg throughput (Naive): {avg_tp_naive:.1f} img/s")
     print(f"    Fused speedup:          {speedup:.2f}x")
+    if results_fused['grad_scale_end'][-1] is not None:
+        print(f"  Dynamic gradient scaling:")
+        print(f"    Final scale (Fused):    {results_fused['grad_scale_end'][-1]:.0f}")
+        print(f"    Final scale (Naive):    {results_naive['grad_scale_end'][-1]:.0f}")
+        print(f"    Skipped updates (Fused): {sum(results_fused['skipped_updates'])}")
+        print(f"    Skipped updates (Naive): {sum(results_naive['skipped_updates'])}")
     
     print(f"\n  ✓ Training comparison complete")
     
@@ -615,13 +648,15 @@ def main():
                         help="Number of training epochs (default: 10)")
     parser.add_argument("--lr", type=float, default=0.01,
                         help="Learning rate (default: 0.01)")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Shared initialization and data-order seed (default: 42)")
     parser.add_argument("--batch-size", type=int, default=32,
                         help="Batch size (default: 32)")
 
     parser.add_argument("--img-size", type=int, default=256,
                         help="Image size (default: 256)")
     parser.add_argument("--all-depths", action="store_true",
-                        help="Test all depths (1-4)")
+                        help="Test all depths (1-5)")
     parser.add_argument("--verbose", action="store_true",
                         help="Print loss/acc each epoch")
     parser.add_argument("--dtype", choices=['fp32', 'fp16', 'bf16', 'all'], default='fp32',
@@ -632,6 +667,8 @@ def main():
                         help="Enable Weights & Biases logging")
     parser.add_argument("--compile", action="store_true",
                         help="Enable torch.compile optimization for fused model")
+    parser.add_argument("--out", type=Path,
+                        help="optional JSON output path for all epoch histories")
     args = parser.parse_args()
     
     # Set device
@@ -666,29 +703,50 @@ def main():
                 "batch_size": args.batch_size,
                 "img_size": args.img_size,
                 "lr": args.lr,
+                "seed": args.seed,
                 "dtype": args.dtype,
                 "device": str(device),
             }
         )
     
+    all_results = []
     for dtype in dtypes_to_test:
         for depth in depths:
-            run_convergence_test(
+            results_fused, results_naive = run_convergence_test(
                 depth=depth,
                 epochs=args.epochs,
                 batch_size=args.batch_size,
                 img_size=args.img_size,
                 lr=args.lr,
+                seed=args.seed,
                 verbose=args.verbose,
                 dtype=dtype,
                 device=device,
                 use_wandb=use_wandb,
                 use_compile=args.compile
             )
+            all_results.append({
+                "dtype": DTYPE_NAMES[dtype],
+                "depth": depth,
+                "epochs": args.epochs,
+                "batch_size": args.batch_size,
+                "img_size": args.img_size,
+                "lr": args.lr,
+                "seed": args.seed,
+                "optimizer": "SGD(lr={}, momentum=0.9)".format(args.lr),
+                "amp": dtype == torch.float16,
+                "fused": results_fused,
+                "reference": results_naive,
+            })
     
     # Finish wandb run
     if use_wandb:
         wandb.finish()
+
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps({"runs": all_results}, indent=2) + "\n")
+        print(f"wrote {args.out}")
     
     print("\n" + "=" * 70)
 

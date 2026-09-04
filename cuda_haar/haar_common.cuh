@@ -27,7 +27,7 @@
 // K = 29 and 53072 B at K = 31 -- past the 48 KiB per-block static limit. Those
 // compile fine and then fail at launch with cudaErrorInvalidArgument, so the
 // dispatch must not instantiate beyond 29.
-#define HAAR_K_LIMIT 29
+#define HAAR_K_LIMIT 7
 
 // Largest kernel size actually instantiated by this build. Every odd K up to
 // this value is compiled for all three dtypes, and each instance is expensive:

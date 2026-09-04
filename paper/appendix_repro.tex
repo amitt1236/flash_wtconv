@@ -1,8 +1,9 @@
-Every number in this paper is produced by a script in the accompanying
-artifact, and no value is transcribed into the manuscript by hand: the
-benchmark scripts emit JSON, a table generator turns that JSON into the
-\LaTeX{} fragments the paper \verb|\input|s, and re-running the pipeline
-overwrites the tables in place.
+The benchmark scripts record structured local results, and a table generator
+turns those results into the \LaTeX{} fragments the paper \verb|\input|s.
+These intermediate experiment files are not part of the released artifact;
+the manuscript reports the timing dispersion needed to interpret the results
+directly. Re-running the pipeline overwrites the tables in place. The commands
+below are run from the \verb|paper/| directory.
 
 \subsection{Pipeline}
 
@@ -13,16 +14,25 @@ python scripts/correctness.py  --device cuda \
                                --out results/correctness.json
 CUDA_VISIBLE_DEVICES=1 python scripts/bench.py --device cuda --protocol both --mode both \
                                --out results/bench_cuda_rtxpro6000.json
+python ../WTConv/wtconvnext/benchmark_throughput.py --mode inference \
+                               --batch-size 64 --warmup 20 --iters 50 \
+                               --out results/endtoend_inference.json
+python ../WTConv/wtconvnext/benchmark_throughput.py --mode train \
+                               --batch-size 64 --warmup 20 --iters 50 \
+                               --out results/endtoend_train.json
 python scripts/make_tables.py  --bench results/bench_cuda.json \
                                --correctness results/correctness.json \
-                               --bench-hardware results/bench_cuda_rtxpro6000.json
+                               --bench-hardware results/bench_cuda_rtxpro6000.json \
+                               --endtoend results/endtoend_inference.json \
+                               --endtoend results/endtoend_train.json
 \end{verbatim}
 
 \noindent
 \texttt{scripts/common.py} holds the measurement harness and the weight
 synchronisation used by both entry points; \texttt{scripts/bench.py} sweeps the
 configuration grid; \texttt{scripts/correctness.py} performs the equivalence
-tests; \texttt{scripts/make\_tables.py} renders the tables. Kernel sizes are
+tests; \texttt{WTConv/wtconvnext/benchmark\_throughput.py} runs the end-to-end
+protocol; \texttt{scripts/make\_tables.py} renders the tables. Kernel sizes are
 never hard-coded in the table generator: it reads them from the recorded
 arguments in the benchmark JSON, so the protocol described in a caption is
 always the protocol that was measured.
@@ -37,9 +47,13 @@ cuDNN algorithm selection --- followed by $50$ timed iterations. The device is f
 state; measured from idle, the smallest configurations are timed during clock
 ramp-up and their means inflate by up to $2\times$, which is enough to distort a
 geometric mean taken over the sweep. We report the
-geometric mean of per-configuration ratios over the sweep; the raw JSON also
-carries median, standard deviation and the $10$th/$90$th percentiles for every
-configuration, which we recommend inspecting before quoting any single figure.
+geometric mean of per-configuration ratios over the sweep. The local result
+record carries the mean, median, standard deviation, and $10$th/$90$th
+percentiles for every configuration; Table~\ref{tab:absolute-k5} reports the
+mean and standard deviation directly. Each configuration was collected in one benchmark sweep, so
+these are 50 within-run samples rather than 50 independent runs.  Across the
+504 A6000 measurements, the median coefficient of variation is $0.57\%$, and
+$90\%$ of configurations have a coefficient of variation below $1.66\%$.
 
 \paragraph{Memory.} \verb|torch.cuda.reset_peak_memory_stats| followed by one
 untimed step and \verb|torch.cuda.max_memory_allocated|. This measures
@@ -83,14 +97,35 @@ depend on the protocol --- the two differ only in the kernel size handed to the
 plain convolutions --- so they are measured once, under the homogeneous
 protocol, and every reported ratio shares that denominator. Baselines: \emph{depthwise} is
 \verb|nn.Conv2d(C, C, k, groups=C, padding='same')| and \emph{dense} is
-\verb|nn.Conv2d(C, C, k, padding='same')|.
+\verb|nn.Conv2d(C, C, k, padding='same')|.  The WTConv reference is the
+official Finder et al. implementation at commit
+\href{https://github.com/BGU-CS-VIL/WTConv/commit/147a75b7aedc8c0bebcf8c0b489819bbf9a1ebe8}{\texttt{147a75b}}.
+Both WTConv implementations run eagerly in the layer sweep and use normal
+cuDNN dispatch; no custom fusion is applied only to the reference.  The
+end-to-end benchmark applies \texttt{torch.compile} uniformly to ConvNeXt-T,
+reference WTConvNeXt-T, and fused WTConvNeXt-T.
 
 \subsection{Environment}
 
-The environment record (GPU, compute capability, HBM capacity, PyTorch, CUDA,
-and cuDNN versions) is captured automatically into every results JSON and
-rendered into the manuscript by the table generator, so the reported hardware
-cannot drift from the hardware actually used.
+The primary sweep used an NVIDIA RTX A6000 (compute capability 8.6, 47.5~GiB),
+Python 3.12.12, PyTorch 2.6.0+cu124, CUDA 12.4, cuDNN 9.1.0, NVIDIA driver
+550.163.01, nvcc 12.4.99, and GCC/G++ 11.4.0.  The cross-hardware sweep used an
+NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition (compute capability
+12.0, 95.0~GiB), Python 3.12.12, PyTorch 2.9.1+cu130, CUDA 13.0, cuDNN
+9.13.0, NVIDIA driver 595.71.05, nvcc 13.0 (build 36424714\_0), and GCC/G++
+11.4.0.
+
+The environment record is captured automatically in each results JSON and
+rendered by the table generator.  The revised capture additionally records the
+NVIDIA driver, nvcc, host C++ compiler, torchvision, and timm versions for
+future runs.  The CUDA extension is compiled on first use by
+\verb|torch.utils.cpp_extension.load| with
+\verb|-O3 --use_fast_math -DHAAR_MAX_K=7|; no separate build step is required.
+The primary layer sweep represents approximately 12 minutes of warmup and timed
+kernel work on the A6000, excluding first-use JIT compilation and Python-side
+setup.  From the submitted throughputs, the end-to-end warmup and measured
+batches represent approximately 18 seconds of inference and 62 seconds of
+training GPU work across the three models, again excluding compilation.
 
 \subsection{Claim-to-evidence map}
 
@@ -109,7 +144,7 @@ Fusion is exact, not approximate & Each step is an algebraic identity; residuals
 Fused form moves $7.00N$ ($L{=}1$) to $8.33N$ elements & Per-stage accounting, Section~\ref{sec:prediction}; not converted into a predicted latency ratio \\
 Measured speedup & Tables~\ref{tab:latency} and~\ref{tab:latency-train}, against the reference and against plain convolutions at matched kernel size and at the drop-in kernel size \\
 Measured peak memory & Table~\ref{tab:memory} (training step) and Table~\ref{tab:memory-inference} (inference) \\
-WTConv's receptive field exceeds the baseline's & $5\cdot2^{L}$ against $7$, Table~\ref{tab:rf}; stated so the drop-in comparison is not read as a receptive-field match \\
+WTConv's receptive field exceeds the baseline's & $5\cdot2^{L}$ against $7$, Table~\ref{tab:rfmatch}; stated so the drop-in comparison is not read as a receptive-field match \\
 Results reproduce on a second, architecturally different GPU & Table~\ref{tab:hardware}, \Cref{sec:results-hardware} \\
 \bottomrule
 \end{tabular}
@@ -117,11 +152,13 @@ Results reproduce on a second, architecturally different GPU & Table~\ref{tab:ha
 
 \subsection{Known gaps}
 
-For transparency we list what the artifact does \emph{not} establish. There is
-no accuracy result connecting the fused kernels to a downstream task, and this
-paper reports no end-to-end training measurement: every reported ratio is
-layer-level. There is no \texttt{torch.compile} arm on either side. Timing uses a
-single resident input tensor, so no host-to-device transfer or data loading is
+For transparency we list what the artifact does \emph{not} establish. We do
+not evaluate downstream convergence, accuracy, or gradient-scale trajectories,
+and make no claim that the two implementations produce identical training
+trajectories. The layer-level sweeps run both methods in eager mode, whereas
+the end-to-end ConvNeXt-T and WTConvNeXt-T measurements
+apply \texttt{torch.compile} uniformly to every model. Timing uses a single
+resident input tensor, so no host-to-device transfer or data loading is
 included. The layer-level sweep is repeated on a second GPU
 (\Cref{sec:results-hardware}), but the end-to-end network measurements of
 \Cref{sec:results-endtoend} and the traffic profiling of \Cref{app:traffic}

@@ -7,7 +7,11 @@
   "cudnn": 91300,
   "gpu": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
   "capability": "12.0",
-  "hbm_gib": 95.0
+  "hbm_gib": 95.0,
+  "nvidia_driver": "595.71.05",
+  "nvcc": "13.0",
+  "nvcc_build": "cuda_13.0.r13.0/compiler.36424714_0",
+  "host_compiler": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0"
  },
  "args": {
   "device": "cuda",

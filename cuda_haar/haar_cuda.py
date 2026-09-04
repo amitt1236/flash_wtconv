@@ -644,6 +644,10 @@ class ScaledDepthwiseConvFunction(Function):
         ctx.padding = padding
         ctx.groups = groups
         ctx.has_bias = bias is not None
+        # Under AMP, cuDNN may execute the convolution in fp16/bf16 even though
+        # the module parameters remain fp32. Preserve that compute dtype so the
+        # explicit backward convolution receives matching operand types.
+        ctx.compute_dtype = output.dtype
         return output
 
     @staticmethod
@@ -651,11 +655,17 @@ class ScaledDepthwiseConvFunction(Function):
         input, weight, scale, fused_weight, saved_bias = ctx.saved_tensors
         padding, groups = ctx.padding, ctx.groups
 
+        compute_dtype = ctx.compute_dtype
+        input_compute = input.to(compute_dtype)
+        fused_weight_compute = fused_weight.to(compute_dtype)
+        grad_output_compute = grad_output.to(compute_dtype)
+
         grad_input = torch.nn.grad.conv2d_input(
-            input.shape, fused_weight, grad_output, padding=padding, groups=groups
-        )
+            input.shape, fused_weight_compute, grad_output_compute,
+            padding=padding, groups=groups
+        ).to(input.dtype)
         grad_fused_weight = _depthwise_grad_weight(
-            input, grad_output, weight, padding, groups
+            input_compute, grad_output_compute, weight, padding, groups
         )
 
         # Unfuse. The forward folds the scale into the weight, W~ = s * W, so the
@@ -666,8 +676,8 @@ class ScaledDepthwiseConvFunction(Function):
         grad_scale = (grad_fused_weight * weight).sum(dim=(1, 2, 3))
 
         if ctx.has_bias:
-            grad_fused_bias = grad_output.sum(dim=(0, 2, 3))
-            grad_bias = scale.reshape(-1) * grad_fused_bias
+            grad_fused_bias = grad_output_compute.sum(dim=(0, 2, 3))
+            grad_bias = (scale.reshape(-1) * grad_fused_bias).to(saved_bias.dtype)
             grad_scale = grad_scale + saved_bias * grad_fused_bias
         else:
             grad_bias = None

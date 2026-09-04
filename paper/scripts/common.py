@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import statistics
+import subprocess
 import sys
 from dataclasses import dataclass, asdict, field
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -256,12 +259,54 @@ def summarise(lat: list[float]) -> dict[str, float]:
 # Environment capture (for the reproducibility appendix)
 # =============================================================================
 
+def _package_version(package: str) -> str | None:
+    try:
+        return version(package)
+    except PackageNotFoundError:
+        return None
+
+
+def _command_output(command: list[str]) -> str | None:
+    try:
+        proc = subprocess.run(command, capture_output=True, text=True, timeout=10,
+                              check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    output = (proc.stdout or proc.stderr).strip()
+    return output or None
+
+
 def environment() -> dict:
     env = {
         "torch": torch.__version__,
+        "torchvision": _package_version("torchvision"),
+        "timm": _package_version("timm"),
         "python": sys.version.split()[0],
         "cuda_available": torch.cuda.is_available(),
     }
+
+    driver = _command_output([
+        "nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"
+    ])
+    if driver:
+        env["nvidia_driver"] = driver.splitlines()[0].strip()
+    else:
+        try:
+            proc_driver = Path("/proc/driver/nvidia/version").read_text()
+        except OSError:
+            proc_driver = ""
+        match = re.search(r"Kernel Module\s+([0-9.]+)", proc_driver)
+        env["nvidia_driver"] = match.group(1) if match else None
+
+    nvcc = _command_output(["nvcc", "--version"])
+    nvcc_match = re.search(r"\bV([0-9.]+)", nvcc or "")
+    env["nvcc"] = nvcc_match.group(1) if nvcc_match else None
+
+    host_compiler = _command_output(["c++", "--version"])
+    env["host_compiler"] = host_compiler.splitlines()[0] if host_compiler else None
+
     if torch.cuda.is_available():
         env.update({
             "cuda": torch.version.cuda,

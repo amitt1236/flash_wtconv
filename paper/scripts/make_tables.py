@@ -434,20 +434,94 @@ def build_correctness(rep: dict, outdir: Path) -> None:
 # Environment + headline macros
 # =============================================================================
 
+def _cudnn_version(value) -> str:
+    """Render torch.backends.cudnn.version() using semantic components."""
+    try:
+        encoded = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if encoded >= 10000:  # cuDNN 9 uses two digits for the minor component.
+        return f"{encoded // 10000}.{(encoded % 10000) // 100}.{encoded % 100}"
+    return f"{encoded // 1000}.{(encoded % 1000) // 100}.{encoded % 100}"
+
+
 def build_env(bench: dict, outdir: Path, filename: str = "env.tex") -> None:
     e = bench.get("env", {})
     parts = []
     if "gpu" in e:
         parts.append(rf"{e['gpu']} (sm\_{e.get('capability', '?').replace('.', '')}, "
                      rf"{e.get('hbm_gib', '?')}\,GiB)")
+    if "python" in e:
+        parts.append(rf"Python~{e['python']}")
     parts.append(rf"PyTorch~{e.get('torch', '?')}")
     if "cuda" in e:
         parts.append(rf"CUDA~{e['cuda']}")
     if "cudnn" in e:
-        parts.append(rf"cuDNN~{e['cudnn']}")
+        parts.append(rf"cuDNN~{_cudnn_version(e['cudnn'])}")
+    if e.get("nvidia_driver"):
+        parts.append(rf"driver~{e['nvidia_driver']}")
+    if e.get("nvcc"):
+        parts.append(rf"nvcc~{e['nvcc']}")
+    if e.get("host_compiler"):
+        compiler = e["host_compiler"].replace("_", r"\_").replace("~", r"\textasciitilde{}")
+        parts.append(compiler)
+    if e.get("torchvision"):
+        parts.append(rf"torchvision~{e['torchvision']}")
+    if e.get("timm"):
+        parts.append(rf"timm~{e['timm']}")
     # Trailing '%' so the file can be \input mid-sentence without adding a space.
     (outdir / filename).write_text(PREAMBLE + ", ".join(parts) + "%\n")
     print(f"wrote {outdir / filename}")
+
+
+# =============================================================================
+# End-to-end table
+# =============================================================================
+
+def build_endtoend(payload: dict, outdir: Path) -> None:
+    rows = {(r["mode"], r["model"]): r for r in payload["rows"]}
+
+    def table_row(mode: str, metric: str, label: str, direction: str) -> str:
+        baseline = rows[(mode, "ConvNeXt-T")][metric]
+        reference = rows[(mode, "WTConvNeXt-T")][metric]
+        fused = rows[(mode, "WTConvNeXt-T (CUDA)")][metric]
+        if metric == "throughput_images_s":
+            value = lambda x: f"{x:.1f}"
+        else:
+            value = lambda x: f"{x:.1f}"
+        return (rf" & {label} ${direction}$ & ${value(baseline)}$ & "
+                rf"${value(reference)}$ (${reference / baseline:.2f}\times$) & "
+                rf"${value(fused)}$ (${fused / baseline:.2f}\times$) & "
+                rf"${fused / reference:.2f}\times$ \\")
+
+    lines = [
+        PREAMBLE,
+        "% Generated from benchmark_throughput.py output.",
+        r"\begin{table}[htpb]",
+        r"\centering",
+        r"\caption{End-to-end network throughput and peak allocated GPU memory, for a forward pass and for a full training step (gradient clearing, forward, backward, and SGD update). Inputs and targets are GPU-resident; data loading and host-to-device transfer are excluded.}",
+        r"\label{tab:endtoend}",
+        r"\setlength{\tabcolsep}{4pt}",
+        r"\begin{tabular}{llcccc}",
+        r"\toprule",
+        r" & & ConvNeXt-T & \multicolumn{2}{c}{WTConvNeXt-T} & Fused / \\",
+        r"\cmidrule(lr){4-5}",
+        r" & & (depthwise) & reference & fused & reference \\",
+        r"\midrule",
+        r"\multirow{2}{*}{Inference}",
+        table_row("inference", "throughput_images_s", "Throughput (img/s)", r"\uparrow"),
+        table_row("inference", "peak_memory_mib", "Peak memory (MiB)", r"\downarrow"),
+        r"\addlinespace[3pt]",
+        r"\multirow{2}{*}{Training step}",
+        table_row("train", "throughput_images_s", "Throughput (img/s)", r"\uparrow"),
+        table_row("train", "peak_memory_mib", "Peak memory (MiB)", r"\downarrow"),
+        r"\bottomrule",
+        r"\end{tabular}",
+        r"\end{table}",
+        "",
+    ]
+    (outdir / "tab_endtoend.tex").write_text("\n".join(lines))
+    print(f"wrote {outdir / 'tab_endtoend.tex'}")
 
 
 # =============================================================================
@@ -576,6 +650,8 @@ def main() -> None:
     p.add_argument("--bench-hardware", type=Path, default=None,
                    help="optional second self-contained bench JSON (e.g. a different GPU) "
                         "for the cross-hardware validation table (tab_hardware.tex)")
+    p.add_argument("--endtoend", type=Path, action="append", default=None,
+                   help="end-to-end benchmark JSON; repeat for inference and training files")
     p.add_argument("--outdir", type=Path, default=Path(__file__).resolve().parent.parent / "results")
     args = p.parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
@@ -602,6 +678,17 @@ def main() -> None:
         hw = json.loads(args.bench_hardware.read_text())
         build_hardware_table(hw, args.outdir)
         build_env(hw, args.outdir, filename="env_hardware.tex")
+    if args.endtoend:
+        endtoend = {"environment": {}, "protocol": {}, "rows": []}
+        for path in args.endtoend:
+            if not path.exists():
+                continue
+            run = json.loads(path.read_text())
+            endtoend["environment"] = endtoend["environment"] or run.get("environment", {})
+            endtoend["protocol"] = endtoend["protocol"] or run.get("protocol", {})
+            endtoend["rows"].extend(run["rows"])
+        if endtoend["rows"]:
+            build_endtoend(endtoend, args.outdir)
 
 
 if __name__ == "__main__":

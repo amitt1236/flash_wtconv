@@ -1,22 +1,21 @@
 """
 Throughput and Peak Memory Benchmark: ConvNeXt vs WTConvNeXt
 
-Measures inference throughput in images per second, and peak allocated GPU
-memory over the timed iterations, for:
-- ConvNeXt-T/S/B (from timm)
-- WTConvNeXt-T/S/B (original naive implementation)
-- WTConvNeXt-T/S/B with CUDA kernels
-- WTConvNeXt-T/S/B with Triton kernels
+Measures throughput in images per second and peak allocated GPU memory over
+the timed iterations for ConvNeXt-T, the released WTConvNeXt-T reference, and
+WTConvNeXt-T with the fused CUDA kernels.
 
-Configuration:
-- Batch size: 64
-- Input size: 224x224
-- Warmup: 50 batches
-- Measurement: 300 batches
+Defaults reproduce Table 7: batch size 64, 224x224 inputs, 20 warmup
+batches, 50 measured batches, FP32, and torch.compile enabled. Run the
+``inference`` and ``train`` modes separately with ``--out <path>`` to retain
+the full protocol and per-batch latency summaries as JSON.
 """
 
+import argparse
+import json
 import sys
 import os
+import statistics
 import warnings
 import logging
 
@@ -43,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from wtconvnext import wtconvnext_tiny, wtconvnext_small, wtconvnext_base
+from paper.scripts.common import environment as capture_environment
 import torch._dynamo
 torch._dynamo.config.suppress_errors = True
 # =============================================================================
@@ -51,11 +51,9 @@ torch._dynamo.config.suppress_errors = True
 BENCHMARK_TRITON = False  # Set to True to include Triton benchmarks
 BENCHMARK_CUDA = True  # Set to True to include CUDA benchmarks
 BENCHMARK_REGULAR = True  # Set to True to include regular/naive WTConvNeXt benchmarks
-USE_TORCH_COMPILE = True  # Set to True to wrap models with torch.compile() - incompatible with custom Triton kernels
 CONVNEXT_KERNEL_SIZE = 7  # Kernel size for ConvNeXt depthwise convolutions (default: 7)
 WTCONVNEXT_KERNEL_SIZE = 5  # Kernel size for WTConvNeXt depthwise convolutions (default: 5)
 USE_CONV_MLP = False  # Use 1x1 conv in MLP
-BENCHMARK_TRAINING_STEP = False  # Set to True to benchmark a full training step (forward + backward + optimizer step) instead of inference only
 
 
 # Lazy-loaded WTConv classes
@@ -105,7 +103,9 @@ def create_wtconvnext_triton(size='tiny'):
         return wtconvnext_base(pretrained=False, wtconv_class=WTConv2dTriton, conv_mlp=USE_CONV_MLP, kernel_sizes=WTCONVNEXT_KERNEL_SIZE)
 
 
-def benchmark_model(model, device, batch_size=64, warmup_batches=20, measure_batches=50, training_step=False):
+def benchmark_model(model, device, batch_size=64, warmup_batches=20,
+                    measure_batches=50, training_step=False,
+                    use_torch_compile=True):
     """
     Benchmark model throughput and peak GPU memory.
 
@@ -130,7 +130,7 @@ def benchmark_model(model, device, batch_size=64, warmup_batches=20, measure_bat
     model = model.to(device)
 
     # Optionally compile the model
-    if USE_TORCH_COMPILE:
+    if use_torch_compile:
         model = torch.compile(model)
 
     # Create input tensor
@@ -161,15 +161,13 @@ def benchmark_model(model, device, batch_size=64, warmup_batches=20, measure_bat
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
 
-        # Create CUDA events for timing
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-
-        # Measure
-        start_event.record()
-        for _ in range(measure_batches):
+        # Measure every batch separately so dispersion is retained.
+        start_events = [torch.cuda.Event(enable_timing=True) for _ in range(measure_batches)]
+        end_events = [torch.cuda.Event(enable_timing=True) for _ in range(measure_batches)]
+        for i in range(measure_batches):
+            start_events[i].record()
             step()
-        end_event.record()
+            end_events[i].record()
     else:
         model.eval()
 
@@ -189,20 +187,20 @@ def benchmark_model(model, device, batch_size=64, warmup_batches=20, measure_bat
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
 
-        # Create CUDA events for timing
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-
-        # Measure
+        # Measure every batch separately so dispersion is retained.
+        start_events = [torch.cuda.Event(enable_timing=True) for _ in range(measure_batches)]
+        end_events = [torch.cuda.Event(enable_timing=True) for _ in range(measure_batches)]
         with torch.no_grad():
-            start_event.record()
-            for _ in range(measure_batches):
+            for i in range(measure_batches):
+                start_events[i].record()
                 _ = model(x)
-            end_event.record()
+                end_events[i].record()
 
     # Wait for completion and get elapsed time
     torch.cuda.synchronize()
-    elapsed_ms = start_event.elapsed_time(end_event)
+    latencies_ms = [start_events[i].elapsed_time(end_events[i])
+                    for i in range(measure_batches)]
+    elapsed_ms = sum(latencies_ms)
     elapsed_sec = elapsed_ms / 1000.0
 
     # Peak allocated memory over the timed iterations
@@ -212,10 +210,44 @@ def benchmark_model(model, device, batch_size=64, warmup_batches=20, measure_bat
     total_images = measure_batches * batch_size
     throughput = total_images / elapsed_sec
 
-    return throughput, peak_mem_mib
+    ordered = sorted(latencies_ms)
+    return {
+        "throughput_images_s": throughput,
+        "peak_memory_mib": peak_mem_mib,
+        "latency_ms_mean": statistics.fmean(latencies_ms),
+        "latency_ms_median": statistics.median(latencies_ms),
+        "latency_ms_std": statistics.pstdev(latencies_ms)
+        if len(latencies_ms) > 1 else 0.0,
+        "latency_ms_p10": ordered[max(0, int(0.10 * len(ordered)) - 1)],
+        "latency_ms_p90": ordered[min(len(ordered) - 1, int(0.90 * len(ordered)))],
+    }
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mode", choices=("inference", "train"),
+                        default="inference")
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--warmup", type=int, default=20)
+    parser.add_argument("--iters", type=int, default=50)
+    parser.add_argument("--convnext-kernel-size", type=int, default=7)
+    parser.add_argument("--wtconv-kernel-size", type=int, default=5)
+    parser.add_argument("--compile", action=argparse.BooleanOptionalAction,
+                        default=True, dest="use_torch_compile")
+    parser.add_argument("--out", type=Path, help="optional JSON output path")
+    return parser.parse_args()
 
 
 def main():
+    global CONVNEXT_KERNEL_SIZE, WTCONVNEXT_KERNEL_SIZE
+    args = parse_args()
+    if not torch.cuda.is_available():
+        raise RuntimeError("This benchmark requires CUDA")
+    if args.batch_size < 1 or args.warmup < 1 or args.iters < 1:
+        raise ValueError("batch-size, warmup, and iters must be positive")
+    CONVNEXT_KERNEL_SIZE = args.convnext_kernel_size
+    WTCONVNEXT_KERNEL_SIZE = args.wtconv_kernel_size
+    training_step = args.mode == "train"
     device = torch.device('cuda')
     
     # Build model list based on configuration
@@ -260,7 +292,7 @@ def main():
     # if BENCHMARK_TRITON:
     #     models.append(('WTConvNeXt-B (Triton)', lambda: create_wtconvnext_triton('base'), False))
     
-    mode = "training step" if BENCHMARK_TRAINING_STEP else "inference"
+    mode = "training step" if training_step else "inference"
     print("\n" + "=" * 70)
     print(f"Throughput and Peak Memory Benchmark ({mode})")
     print("=" * 70)
@@ -282,8 +314,16 @@ def main():
             current_size = 'B'
 
         model = model_factory()
-        throughput, peak_mem = benchmark_model(model, device, training_step=BENCHMARK_TRAINING_STEP)
-        results.append((name, throughput, peak_mem, is_baseline))
+        metrics = benchmark_model(
+            model, device, batch_size=args.batch_size,
+            warmup_batches=args.warmup, measure_batches=args.iters,
+            training_step=training_step,
+            use_torch_compile=args.use_torch_compile,
+        )
+        throughput = metrics["throughput_images_s"]
+        peak_mem = metrics["peak_memory_mib"]
+        results.append({"mode": args.mode, "model": name,
+                        "is_baseline": is_baseline, **metrics})
 
         if is_baseline:
             baseline_throughput = throughput
@@ -317,19 +357,48 @@ def main():
 
     # Group results by size
     for size in ['T', 'S', 'B']:
-        convnext = next((r for r in results if r[0] == f'ConvNeXt-{size}'), None)
+        convnext = next((r for r in results if r["model"] == f'ConvNeXt-{size}'), None)
         if convnext:
-            base_throughput = convnext[1]
-            base_memory = convnext[2]
+            base_throughput = convnext["throughput_images_s"]
+            base_memory = convnext["peak_memory_mib"]
             print(f"\n{size} variants (baseline: ConvNeXt-{size} = "
                   f"{base_throughput:.2f} img/sec, {base_memory:.1f} MiB)")
 
-            for name, throughput, peak_mem, _ in results:
+            for result in results:
+                name = result["model"]
+                throughput = result["throughput_images_s"]
+                peak_mem = result["peak_memory_mib"]
                 if f'WTConvNeXt-{size}' in name and throughput > 0:
                     thr_ratio = throughput / base_throughput * 100
                     mem_ratio = peak_mem / base_memory * 100
                     print(f"  {name:<25}: {throughput:>8.2f} img/sec ({thr_ratio:>5.1f}%)"
                           f" | {peak_mem:>8.1f} MiB ({mem_ratio:>5.1f}%)")
+
+    payload = {
+        "environment": capture_environment(),
+        "protocol": {
+            "mode": args.mode,
+            "architecture": "ConvNeXt-T/WTConvNeXt-T",
+            "depths": [3, 3, 9, 3],
+            "widths": [96, 192, 384, 768],
+            "wt_levels": [5, 4, 3, 2],
+            "input_shape": [args.batch_size, 3, 224, 224],
+            "precision": "fp32",
+            "warmup": args.warmup,
+            "iters": args.iters,
+            "torch_compile": args.use_torch_compile,
+            "convnext_kernel_size": args.convnext_kernel_size,
+            "wtconv_kernel_size": args.wtconv_kernel_size,
+            "data_loading_included": False,
+            "host_to_device_transfer_included": False,
+            "training_step": "zero_grad, forward cross-entropy, backward, SGD step",
+        },
+        "rows": results,
+    }
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(payload, indent=2) + "\n")
+        print(f"wrote {args.out}")
 
 
 if __name__ == '__main__':

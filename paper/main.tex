@@ -532,6 +532,11 @@ This work reduces the time and memory required to evaluate an existing operator 
 \appendix
 
 \clearpage
+\section{Reproducibility and artifact guide}
+\label{app:reproducibility}
+\input{appendix_repro.tex}
+
+\clearpage
 \section{Why the bit-indexed Haar synthesis formula is correct}
 \label{app:bitindexed-proof}
 
@@ -769,20 +774,22 @@ described in \autoref{app:traffic-bad}.
 
 \autoref{tab:absolute-k5} and \autoref{tab:absolute-k3} report the absolute
 latencies underlying the ratios in \autoref{tab:latency-train},
-\autoref{tab:latency}, and \autoref{tab:k3}. Each entry is the geometric mean
-over the nine $(C,H)$ configurations in \autoref{sec:setup} of the mean latency
-from 50 timed iterations. Consequently, before the displayed values are
-rounded, dividing a reference entry by another entry reproduces the
-corresponding geometric-mean speedup in the main paper. Plain convolutions do
-not depend on $L$, so their measured latency is repeated across the five
-columns.
+\autoref{tab:latency}, and \autoref{tab:k3}. Each entry is $m\pm s$ ms, where
+$m$ and $s$ are the geometric means, over the nine $(C,H)$ configurations in
+\autoref{sec:setup}, of the per-configuration mean and within-run standard
+deviation from 50 timed iterations. Ratios of central values reproduce the
+reported speedups before rounding. Plain-convolution entries are repeated
+because they do not depend on $L$.
 
 \begin{table}[htpb]
 \centering
-\small
-\caption{Absolute latency in milliseconds for the $k{=}5$ sweep. WTConv uses
-$k{=}5$ throughout. The depthwise $k{=}5$ row is the matched-kernel baseline,
-and the depthwise $k{=}7$ row is the ConvNeXt drop-in baseline.}
+\scriptsize
+\setlength{\tabcolsep}{1.5pt}
+\caption{Absolute latency in milliseconds for the $k{=}5$ sweep, reported as
+geometric mean latency $\pm$ geometric mean within-configuration standard
+deviation. WTConv uses $k{=}5$ throughout. The depthwise $k{=}5$ row is the
+matched-kernel baseline, and the depthwise $k{=}7$ row is the ConvNeXt drop-in
+baseline.}
 \label{tab:absolute-k5}
 \begin{tabular}{llccccc}
 \toprule
@@ -792,40 +799,42 @@ and the depthwise $k{=}7$ row is the ConvNeXt drop-in baseline.}
 \midrule
 \multicolumn{7}{l}{\textit{Forward pass}} \\
 \addlinespace[2pt]
-Depthwise conv, $k{=}5$ & \texttt{fp32} & 1.154 & 1.154 & 1.154 & 1.154 & 1.154 \\
- & \texttt{fp16} & 0.479 & 0.479 & 0.479 & 0.479 & 0.479 \\
+Depthwise conv, $k{=}5$ & \texttt{fp32} & $1.154\pm0.012$ & $1.154\pm0.012$ & $1.154\pm0.012$ & $1.154\pm0.012$ & $1.154\pm0.012$ \\
+ & \texttt{fp16} & $0.479\pm0.008$ & $0.479\pm0.008$ & $0.479\pm0.008$ & $0.479\pm0.008$ & $0.479\pm0.008$ \\
 \addlinespace[2pt]
-Depthwise conv, $k{=}7$ & \texttt{fp32} & 2.237 & 2.237 & 2.237 & 2.237 & 2.237 \\
- & \texttt{fp16} & 2.291 & 2.291 & 2.291 & 2.291 & 2.291 \\
+Depthwise conv, $k{=}7$ & \texttt{fp32} & $2.237\pm0.014$ & $2.237\pm0.014$ & $2.237\pm0.014$ & $2.237\pm0.014$ & $2.237\pm0.014$ \\
+ & \texttt{fp16} & $2.291\pm0.016$ & $2.291\pm0.016$ & $2.291\pm0.016$ & $2.291\pm0.016$ & $2.291\pm0.016$ \\
 \addlinespace[2pt]
-WTConv, reference & \texttt{fp32} & 8.487 & 10.710 & 11.387 & 11.652 & 11.815 \\
- & \texttt{fp16} & 4.689 & 5.723 & 6.004 & 6.104 & 6.174 \\
+WTConv, reference & \texttt{fp32} & $8.487\pm0.036$ & $10.710\pm0.038$ & $11.387\pm0.039$ & $11.652\pm0.041$ & $11.815\pm0.048$ \\
+ & \texttt{fp16} & $4.689\pm0.024$ & $5.723\pm0.025$ & $6.004\pm0.031$ & $6.104\pm0.025$ & $6.174\pm0.028$ \\
 \addlinespace[2pt]
-WTConv, \textbf{fused} & \texttt{fp32} & 2.312 & 2.552 & 2.634 & 2.681 & 2.703 \\
- & \texttt{fp16} & 1.389 & 1.592 & 1.668 & 1.710 & 1.748 \\
+WTConv, \textbf{fused} & \texttt{fp32} & $2.312\pm0.024$ & $2.552\pm0.030$ & $2.634\pm0.035$ & $2.681\pm0.036$ & $2.703\pm0.036$ \\
+ & \texttt{fp16} & $1.389\pm0.014$ & $1.592\pm0.022$ & $1.668\pm0.021$ & $1.710\pm0.020$ & $1.748\pm0.027$ \\
 \midrule
 \multicolumn{7}{l}{\textit{Training step (forward and backward)}} \\
 \addlinespace[2pt]
-Depthwise conv, $k{=}5$ & \texttt{fp32} & 5.913 & 5.913 & 5.913 & 5.913 & 5.913 \\
- & \texttt{fp16} & 2.289 & 2.289 & 2.289 & 2.289 & 2.289 \\
+Depthwise conv, $k{=}5$ & \texttt{fp32} & $5.913\pm0.092$ & $5.913\pm0.092$ & $5.913\pm0.092$ & $5.913\pm0.092$ & $5.913\pm0.092$ \\
+ & \texttt{fp16} & $2.289\pm0.015$ & $2.289\pm0.015$ & $2.289\pm0.015$ & $2.289\pm0.015$ & $2.289\pm0.015$ \\
 \addlinespace[2pt]
-Depthwise conv, $k{=}7$ & \texttt{fp32} & 11.737 & 11.737 & 11.737 & 11.737 & 11.737 \\
- & \texttt{fp16} & 9.417 & 9.417 & 9.417 & 9.417 & 9.417 \\
+Depthwise conv, $k{=}7$ & \texttt{fp32} & $11.737\pm0.134$ & $11.737\pm0.134$ & $11.737\pm0.134$ & $11.737\pm0.134$ & $11.737\pm0.134$ \\
+ & \texttt{fp16} & $9.417\pm0.068$ & $9.417\pm0.068$ & $9.417\pm0.068$ & $9.417\pm0.068$ & $9.417\pm0.068$ \\
 \addlinespace[2pt]
-WTConv, reference & \texttt{fp32} & 28.901 & 36.738 & 39.036 & 39.854 & 40.163 \\
- & \texttt{fp16} & 14.362 & 18.592 & 19.842 & 20.366 & 20.758 \\
+WTConv, reference & \texttt{fp32} & $28.901\pm0.145$ & $36.738\pm0.166$ & $39.036\pm0.162$ & $39.854\pm0.160$ & $40.163\pm0.183$ \\
+ & \texttt{fp16} & $14.362\pm0.033$ & $18.592\pm0.040$ & $19.842\pm0.056$ & $20.366\pm0.073$ & $20.758\pm0.086$ \\
 \addlinespace[2pt]
-WTConv, \textbf{fused} & \texttt{fp32} & 7.800 & 8.693 & 8.995 & 9.154 & 9.277 \\
- & \texttt{fp16} & 5.365 & 6.148 & 6.442 & 6.600 & 6.733 \\
+WTConv, \textbf{fused} & \texttt{fp32} & $7.800\pm0.042$ & $8.693\pm0.041$ & $8.995\pm0.045$ & $9.154\pm0.044$ & $9.277\pm0.046$ \\
+ & \texttt{fp16} & $5.365\pm0.017$ & $6.148\pm0.022$ & $6.442\pm0.020$ & $6.600\pm0.027$ & $6.733\pm0.027$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{table}[p]
 \centering
-\small
+\scriptsize
+\setlength{\tabcolsep}{1.5pt}
 \caption{Absolute latency in milliseconds for the reference and fused WTConv
-implementations in the $k{=}3$ sweep.}
+implementations in the $k{=}3$ sweep, reported as geometric mean latency
+$\pm$ geometric mean within-configuration standard deviation.}
 \label{tab:absolute-k3}
 \begin{tabular}{llccccc}
 \toprule
@@ -835,19 +844,19 @@ implementations in the $k{=}3$ sweep.}
 \midrule
 \multicolumn{7}{l}{\textit{Forward pass}} \\
 \addlinespace[2pt]
-WTConv, reference & \texttt{fp32} & 7.474 & 9.506 & 10.198 & 10.449 & 10.651 \\
- & \texttt{fp16} & 4.529 & 5.552 & 5.834 & 5.940 & 5.999 \\
+WTConv, reference & \texttt{fp32} & $7.474\pm0.034$ & $9.506\pm0.037$ & $10.198\pm0.035$ & $10.449\pm0.034$ & $10.651\pm0.035$ \\
+ & \texttt{fp16} & $4.529\pm0.021$ & $5.552\pm0.029$ & $5.834\pm0.024$ & $5.940\pm0.025$ & $5.999\pm0.025$ \\
 \addlinespace[2pt]
-WTConv, \textbf{fused} & \texttt{fp32} & 1.667 & 1.880 & 1.945 & 1.979 & 2.001 \\
- & \texttt{fp16} & 1.029 & 1.155 & 1.205 & 1.234 & 1.258 \\
+WTConv, \textbf{fused} & \texttt{fp32} & $1.667\pm0.019$ & $1.880\pm0.019$ & $1.945\pm0.020$ & $1.979\pm0.020$ & $2.001\pm0.023$ \\
+ & \texttt{fp16} & $1.029\pm0.014$ & $1.155\pm0.017$ & $1.205\pm0.015$ & $1.234\pm0.015$ & $1.258\pm0.016$ \\
 \midrule
 \multicolumn{7}{l}{\textit{Training step (forward and backward)}} \\
 \addlinespace[2pt]
-WTConv, reference & \texttt{fp32} & 23.462 & 31.003 & 33.036 & 33.845 & 34.315 \\
- & \texttt{fp16} & 12.955 & 17.093 & 18.310 & 18.821 & 19.186 \\
+WTConv, reference & \texttt{fp32} & $23.462\pm0.088$ & $31.003\pm0.097$ & $33.036\pm0.122$ & $33.845\pm0.147$ & $34.315\pm0.150$ \\
+ & \texttt{fp16} & $12.955\pm0.029$ & $17.093\pm0.049$ & $18.310\pm0.060$ & $18.821\pm0.070$ & $19.186\pm0.083$ \\
 \addlinespace[2pt]
-WTConv, \textbf{fused} & \texttt{fp32} & 6.081 & 6.891 & 7.135 & 7.248 & 7.332 \\
- & \texttt{fp16} & 3.908 & 4.470 & 4.665 & 4.773 & 4.870 \\
+WTConv, \textbf{fused} & \texttt{fp32} & $6.081\pm0.023$ & $6.891\pm0.027$ & $7.135\pm0.028$ & $7.248\pm0.024$ & $7.332\pm0.028$ \\
+ & \texttt{fp16} & $3.908\pm0.016$ & $4.470\pm0.018$ & $4.665\pm0.016$ & $4.773\pm0.019$ & $4.870\pm0.020$ \\
 \bottomrule
 \end{tabular}
 \end{table}
