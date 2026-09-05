@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+from contextlib import nullcontext
 import sys
 from pathlib import Path
 
@@ -66,10 +67,11 @@ def param_pairs(model, naive, depth):
     return pairs
 
 
-def run_case(B, C, H, W, K, depth, dtype, stride=1, bias=True, verbose=True):
+def run_case(B, C, H, W, K, depth, dtype, stride=1, bias=True, verbose=True,
+             amp_dtype=None):
     """Compare forward + all gradients against the reference. Returns True on pass."""
     WTConv2d, WTConv2dNaive = get_classes()
-    tol = TOLERANCE[dtype]
+    tol = TOLERANCE[amp_dtype or dtype]
 
     torch.manual_seed(42)
     model = WTConv2d(C, C, kernel_size=K, wt_levels=depth, stride=stride,
@@ -82,8 +84,12 @@ def run_case(B, C, H, W, K, depth, dtype, stride=1, bias=True, verbose=True):
     x_f = x.clone().requires_grad_()
     x_n = x.clone().requires_grad_()
 
-    out_f = model(x_f)
-    out_n = naive(x_n)
+    with (torch.autocast('cuda', dtype=amp_dtype)
+          if amp_dtype is not None else nullcontext()):
+        out_f = model(x_f)
+        out_n = naive(x_n)
+    if amp_dtype is not None:
+        assert out_f.dtype == amp_dtype
     assert out_f.shape == out_n.shape, f"shape {out_f.shape} != {out_n.shape}"
 
     diffs = {}
@@ -95,6 +101,7 @@ def run_case(B, C, H, W, K, depth, dtype, stride=1, bias=True, verbose=True):
 
     diffs['grad_input'] = (x_f.grad.float() - x_n.grad.float()).abs().max().item()
     for name, pf, pn in param_pairs(model, naive, depth):
+        assert pf.grad.dtype == pf.dtype
         diffs[f'grad_{name}'] = (pf.grad.float() - pn.grad.float()).abs().max().item()
 
     ok = diffs['output'] < tol['out'] and all(
@@ -102,6 +109,8 @@ def run_case(B, C, H, W, K, depth, dtype, stride=1, bias=True, verbose=True):
 
     tag = (f"B{B} C{C} {H}x{W} K{K} L{depth} s{stride} "
            f"{'bias' if bias else 'nobias'} {str(dtype).split('.')[-1]}")
+    if amp_dtype is not None:
+        tag += f" AMP {str(amp_dtype).split('.')[-1]}"
     if verbose:
         worst = max(diffs.items(), key=lambda kv: kv[1])
         print(f"  {'PASS' if ok else 'FAIL'}  {tag:52s} "
@@ -149,6 +158,14 @@ def main():
     results.append(run_case(2, 16, 64, 64, 5, 2, torch.float32, bias=False))
     results.append(run_case(1, 1, 32, 32, 3, 2, torch.float32))
     results.append(run_case(4, 96, 56, 56, 5, 3, torch.float32))
+
+    print("\n[AMP with fp32 inputs and parameters]")
+    for amp_dtype in [torch.float16, torch.bfloat16]:
+        if amp_dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+            continue
+        for depth in [1, 3, 5]:
+            results.append(run_case(2, 8, 17, 19, 5, depth, torch.float32,
+                                    amp_dtype=amp_dtype))
 
     passed, total = sum(results), len(results)
     print(f"\n{passed}/{total} cases passed")

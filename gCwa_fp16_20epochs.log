@@ -1,0 +1,17 @@
+Using device: cuda
+
+======================================================================
+Training Convergence Test: CIFAR-10 @ 256x256 [fp16]
+depth=2, epochs=20, batch_size=32
+======================================================================
+
+--- Loading CIFAR-10 ---
+
+--- Verifying Initial State ---
+Compiling fused Haar CUDA kernels
+Done.
+  Initial output diff: 8.90e-07
+  ✓ Models start with identical outputs
+
+--- Training Fused Model ---
+  [Fused] Epoch   1: train_loss=1.3682, train_acc=49.65%, val_loss=1.1256, val_acc=58.65%, 580.5 img/s, grad_scale=65536->65536, skipped_updates=0

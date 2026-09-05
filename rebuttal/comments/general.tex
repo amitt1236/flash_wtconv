@@ -1,0 +1,27 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{xcolor}
+\renewcommand{\familydefault}{\sfdefault}
+\usepackage{parskip}
+\setcounter{secnumdepth}{0}
+\usepackage[
+    hybrid=true,
+    pipeTables=true,
+    fencedCode=true,
+    hashEnumerators=true,
+    smartEllipses=true,
+    underscores=false
+]{markdown}
+
+\begin{document}
+
+\begin{markdown}
+We thank all reviewers for their constructive feedback. We made the following revisions to improve clarity and reproducibility.
+
+**Revised paper.** We added a Reproducibility section to the appendix that documents the reference baseline, execution settings, hardware and software environments, and measurement protocols. Tables 14 and 15 now report absolute latency with within-run standard deviations.
+
+**Revised supplementary material.** We provide self-contained fused and reference implementations, document the exact build and runtime requirements, and include a standalone single-configuration benchmark. The benchmark follows the paper's CUDA-event procedure with 20 warmup and 50 timed iterations and reports forward and forward--backward latency and peak memory for both implementations.
+\end{markdown}
+
+\end{document}

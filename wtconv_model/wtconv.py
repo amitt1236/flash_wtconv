@@ -121,6 +121,13 @@ class WTConv2d(nn.Module):
         haar = self._haar
         K = self.kernel_size
 
+        # Custom CUDA kernels do not participate in autocast automatically.
+        # Residual blocks can supply fp32 activations under AMP, while cuDNN
+        # autocasts the base convolution. Keep both branches in its compute
+        # dtype; this differentiable cast leaves master parameters in fp32.
+        if x.is_cuda and torch.is_autocast_enabled('cuda'):
+            x = x.to(torch.get_autocast_dtype('cuda'))
+
         # Base conv at full resolution, on the unpadded input
         base_out = haar.scaled_depthwise_conv(
             x, self.base_weight, self.base_scale, K // 2, bias=self.base_bias

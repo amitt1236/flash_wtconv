@@ -1,11 +1,15 @@
 """
 Training Convergence Test
 =========================
-Trains both naive (WTConv2dNaive) and fused (WTConv2d) models on CIFAR-10
+Trains both naive (WTConv2dNaive) and fused (WTConv2d) models on Tiny ImageNet
 classification to verify they converge identically.
 
-Uses a simple CNN with WTConv layer for CIFAR-10 classification (resized to 256x256).
-Includes validation on a separate test set to verify both training and validation metrics.
+Uses WTConvNeXt Tiny with a 200-class head for Tiny ImageNet (resized to 128x128).
+Defaults to stage wavelet levels (5, 4, 3, 2); --depth overrides all four stages.
+Uses the official labeled validation split; the test split has no public labels.
+Downloads tiny-imagenet-200 into --data-root when it is missing.
+Uses AdamW (lr=3e-4, weight decay=0.05), 3 warmup epochs, and cosine decay
+to 1e-6. Training uses random resized crops and horizontal flips.
 
 Usage:
     python test_train_convergence.py              # Run with default settings
@@ -19,6 +23,7 @@ Usage:
 
 import argparse
 import json
+import math
 import time
 import sys
 import warnings
@@ -35,9 +40,10 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Dataset
+from torchvision.datasets.folder import default_loader
+from torchvision.datasets.utils import download_and_extract_archive
 from contextlib import nullcontext
-from tqdm import tqdm
 
 import wandb
 
@@ -58,140 +64,30 @@ DTYPE_NAMES = {
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "WTConv"))
 
 from wtconv_model.wtconv import WTConv2d
-from WTConv.wtconv.wtconv2d import WTConv2d as WTConv2dNaive
+from wtconv import WTConv2d as WTConv2dNaive
+from wtconvnext import wtconvnext_tiny
 
 
 # ==============================================================================
-# Simple CNN Model with WTConv layer
+# WTConvNeXt Tiny models and weight synchronization
 # ==============================================================================
 
-class InvertedResidual(nn.Module):
-    """MobileNetV2 Inverted Residual block using WTConv for depthwise convolution."""
-    
-    def __init__(self, in_channels, out_channels, wtconv_class, depth=2, 
-                 expand_ratio=4, stride=1, kernel_size=3):
-        super().__init__()
-        self.stride = stride
-        self.use_residual = stride == 1 and in_channels == out_channels
-        
-        hidden_dim = in_channels * expand_ratio
-        
-        layers = []
-        
-        # Expansion phase: 1x1 conv to expand channels
-        if expand_ratio != 1:
-            layers.extend([
-                nn.Conv2d(in_channels, hidden_dim, 1, bias=False),
-                nn.BatchNorm2d(hidden_dim),
-                nn.ReLU6(inplace=True),
-            ])
-        
-        # WTConv requires in_channels == out_channels, so we use hidden_dim
-        self.wtconv = wtconv_class(hidden_dim, hidden_dim, kernel_size=kernel_size, wt_levels=depth)
-        
-        # Projection phase: 1x1 conv to reduce channels (linear - no activation)
-        self.project = nn.Sequential(
-            nn.Conv2d(hidden_dim, out_channels, 1, bias=False),
-            nn.BatchNorm2d(out_channels),
-        )
-        
-        self.expand = nn.Sequential(*layers) if layers else nn.Identity()
-        
-        # Stride handling (applied after WTConv if stride > 1)
-        self.downsample = nn.AvgPool2d(stride, stride) if stride > 1 else nn.Identity()
-        
-    def forward(self, x):
-        identity = x
-        
-        # Expansion
-        out = self.expand(x)
-        
-        # WTConv (depthwise)
-        out = self.wtconv(out)
-        out = nn.functional.relu6(out)
-        
-        # Downsample if needed
-        out = self.downsample(out)
-        
-        # Projection (linear bottleneck - no activation)
-        out = self.project(out)
-        
-        # Residual connection
-        if self.use_residual:
-            out = out + identity
-        
-        return out
+DEFAULT_WT_LEVELS = (5, 4, 3, 2)
 
 
-class WTMobileNet(nn.Module):
-    """MobileNetV2-style network using WTConv for depthwise convolutions.
-    
-    Architecture:
-    - Stem: Conv2d -> BN -> ReLU6 (3 -> 32 channels)
-    - Body: Inverted Residual blocks with WTConv
-    - Head: AdaptiveAvgPool -> Linear
-    """
-    
-    def __init__(self, wtconv_class, depth=2, num_classes=10, width_mult=1.0):
-        super().__init__()
-        
-        # Configuration: (expand_ratio, out_channels, num_blocks, stride)
-        # Progressive downsampling for 256x256 input: 256 -> 128 -> 64 -> 32 -> 16
-        self.cfgs = [
-            # expand, out, blocks, stride
-            (1, 32, 1, 1),    # 128x128 (after stem stride=2)
-            (4, 64, 2, 2),    # 64x64 (first block has stride=2)
-            (4, 96, 3, 2),    # 32x32
-            (4, 128, 2, 2),   # 16x16
-            (4, 256, 1, 1),   # 16x16 (final)
-        ]
-        
-        input_channels = int(32 * width_mult)
-        
-        # Stem (stride=2 for 256x256 input -> 128x128)
-        self.stem = nn.Sequential(
-            nn.Conv2d(3, input_channels, 3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(input_channels),
-            nn.ReLU6(inplace=True),
-        )
-        
-        # Build inverted residual blocks
-        layers = []
-        for expand_ratio, out_c, num_blocks, stride in self.cfgs:
-            out_channels = int(out_c * width_mult)
-            for i in range(num_blocks):
-                s = stride if i == 0 else 1
-                layers.append(
-                    InvertedResidual(
-                        input_channels, out_channels, wtconv_class,
-                        depth=depth, expand_ratio=expand_ratio, stride=s
-                    )
-                )
-                input_channels = out_channels
-        
-        self.features = nn.Sequential(*layers)
-        
-        # Store wtconv_class for weight copying
-        self.wtconv_class = wtconv_class
-        self.depth = depth
-        
-        # Head
-        self.pool = nn.AdaptiveAvgPool2d(1)
-        self.classifier = nn.Linear(input_channels, num_classes)
-        
-    def forward(self, x):
-        x = self.stem(x)
-        x = self.features(x)
-        x = self.pool(x)
-        x = x.view(x.size(0), -1)
-        x = self.classifier(x)
-        return x
-
-
-# Alias for backward compatibility
-SimpleCNN = WTMobileNet
+def build_model(wtconv_class, depth=None, num_classes=200):
+    """Build WTConvNeXt Tiny, optionally overriding wavelet levels in every stage."""
+    wt_levels = DEFAULT_WT_LEVELS if depth is None else (depth,) * 4
+    return wtconvnext_tiny(
+        pretrained=False,
+        num_classes=num_classes,
+        wtconv_class=wtconv_class,
+        wt_levels=wt_levels,
+        conv_mlp=True,
+    )
 
 
 def _wtconv_tensors(wtconv):
@@ -238,103 +134,170 @@ def copy_wtconv_weights(src_wtconv, dst_wtconv, src_class=None, dst_class=None):
 
 
 def copy_full_model_weights(src_model, dst_model, src_wtconv_class, dst_wtconv_class):
-    """Copy all weights from source WTMobileNet to destination WTMobileNet."""
+    """Copy shared model state and translate the two WTConv parameter layouts."""
+    src_wtconvs = {
+        name: module for name, module in src_model.named_modules()
+        if isinstance(module, src_wtconv_class)
+    }
+    dst_wtconvs = {
+        name: module for name, module in dst_model.named_modules()
+        if isinstance(module, dst_wtconv_class)
+    }
+    if src_wtconvs.keys() != dst_wtconvs.keys():
+        raise ValueError("Models have different WTConv module layouts")
+
+    wtconv_prefixes = tuple(f"{name}." for name in src_wtconvs)
+    src_state = {
+        name: tensor for name, tensor in src_model.state_dict().items()
+        if not name.startswith(wtconv_prefixes)
+    }
+    dst_state = {
+        name: tensor for name, tensor in dst_model.state_dict().items()
+        if not name.startswith(wtconv_prefixes)
+    }
+    if src_state.keys() != dst_state.keys():
+        raise ValueError("Models have different non-WTConv state layouts")
+
     with torch.no_grad():
-        # Copy stem (Conv + BN)
-        for i, (src_layer, dst_layer) in enumerate(zip(src_model.stem, dst_model.stem)):
-            if hasattr(src_layer, 'weight'):
-                dst_layer.weight.copy_(src_layer.weight)
-            if hasattr(src_layer, 'bias') and src_layer.bias is not None:
-                if hasattr(dst_layer, 'bias') and dst_layer.bias is not None:
-                    dst_layer.bias.copy_(src_layer.bias)
-            if hasattr(src_layer, 'running_mean'):
-                dst_layer.running_mean.copy_(src_layer.running_mean)
-                dst_layer.running_var.copy_(src_layer.running_var)
-        
-        # Copy inverted residual blocks
-        for src_block, dst_block in zip(src_model.features, dst_model.features):
-            # Copy expansion layers
-            if hasattr(src_block.expand, 'weight'):  # nn.Identity doesn't have weight
-                for src_layer, dst_layer in zip(src_block.expand, dst_block.expand):
-                    if hasattr(src_layer, 'weight'):
-                        dst_layer.weight.copy_(src_layer.weight)
-                    if hasattr(src_layer, 'bias') and src_layer.bias is not None:
-                        if hasattr(dst_layer, 'bias') and dst_layer.bias is not None:
-                            dst_layer.bias.copy_(src_layer.bias)
-                    if hasattr(src_layer, 'running_mean'):
-                        dst_layer.running_mean.copy_(src_layer.running_mean)
-                        dst_layer.running_var.copy_(src_layer.running_var)
-            
-            # Copy WTConv
-            copy_wtconv_weights(src_block.wtconv, dst_block.wtconv, src_wtconv_class, dst_wtconv_class)
-            
-            # Copy projection layers
-            for src_layer, dst_layer in zip(src_block.project, dst_block.project):
-                if hasattr(src_layer, 'weight'):
-                    dst_layer.weight.copy_(src_layer.weight)
-                if hasattr(src_layer, 'bias') and src_layer.bias is not None:
-                    if hasattr(dst_layer, 'bias') and dst_layer.bias is not None:
-                        dst_layer.bias.copy_(src_layer.bias)
-                if hasattr(src_layer, 'running_mean'):
-                    dst_layer.running_mean.copy_(src_layer.running_mean)
-                    dst_layer.running_var.copy_(src_layer.running_var)
-        
-        # Copy classifier
-        dst_model.classifier.weight.copy_(src_model.classifier.weight)
-        dst_model.classifier.bias.copy_(src_model.classifier.bias)
+        for name, tensor in src_state.items():
+            dst_state[name].copy_(tensor)
+        for name, src_wtconv in src_wtconvs.items():
+            copy_wtconv_weights(src_wtconv, dst_wtconvs[name])
 
 
 # ==============================================================================
 # Data Loading
 # ==============================================================================
 
-def get_cifar10_loaders(batch_size=32, img_size=256, num_workers=4, device=None, seed=42, drop_last=False, generator=None):
-    """Load CIFAR-10 dataset resized to specified size. Uses subset for training, full test set for validation.
-    
-    Args:
-        generator: Optional torch.Generator to use for shuffling. If None, creates one with the given seed.
-                   Pass the same generator to multiple loaders for identical shuffle order.
+TINY_IMAGENET_URL = "https://cs231n.stanford.edu/tiny-imagenet-200.zip"
+
+
+class TinyImageNetValidation(Dataset):
+    """Read the official flat validation directory using the training class mapping."""
+
+    def __init__(self, root, class_to_idx, transform=None):
+        self.root = Path(root)
+        self.class_to_idx = class_to_idx
+        self.transform = transform
+        self.samples = []
+        annotations = self.root / "val_annotations.txt"
+        for line in annotations.read_text().splitlines():
+            if not line.strip():
+                continue
+            filename, wnid, *_ = line.split()
+            self.samples.append((self.root / "images" / filename, class_to_idx[wnid]))
+        if not self.samples:
+            raise ValueError(f"No validation samples found in {annotations}")
+        self.targets = [target for _, target in self.samples]
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index):
+        path, target = self.samples[index]
+        image = default_loader(str(path))  # Convert grayscale images to RGB too.
+        if self.transform is not None:
+            image = self.transform(image)
+        return image, target
+
+
+def get_tiny_imagenet_loaders(batch_size=128, img_size=128, num_workers=4,
+                              device=None, seed=42, drop_last=False,
+                              generator=None, data_root='./data'):
+    """Load Tiny ImageNet training and labeled validation images.
+
+    data_root can be the extracted tiny-imagenet-200 directory or its parent.
+    Reset the shared generator before each model's training for the same shuffle.
     """
-    transform = transforms.Compose([
+    data_root = Path(data_root).expanduser()
+    dataset_root = (data_root if data_root.name == "tiny-imagenet-200"
+                    or (data_root / "train").is_dir()
+                    else data_root / "tiny-imagenet-200")
+    if not dataset_root.exists():
+        download_and_extract_archive(
+            TINY_IMAGENET_URL, download_root=str(dataset_root.parent),
+            filename="tiny-imagenet-200.zip",
+        )
+    if (not (dataset_root / "train").is_dir()
+            or not (dataset_root / "val" / "val_annotations.txt").is_file()):
+        raise FileNotFoundError(
+            f"Expected the official Tiny ImageNet layout in {dataset_root}: "
+            "train/<class>/images and val/val_annotations.txt. "
+            "Set --data-root to the extracted dataset or its parent."
+        )
+
+    train_transform = transforms.Compose([
+        transforms.RandomResizedCrop(img_size, scale=(0.8, 1.0)),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+    ])
+    val_transform = transforms.Compose([
         transforms.Resize((img_size, img_size)),
         transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616))
+        transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    
-    # Download CIFAR-10
-    train_dataset = torchvision.datasets.CIFAR10(
-        root='./data', train=True, download=True, transform=transform
+    train_dataset = torchvision.datasets.ImageFolder(
+        dataset_root / "train", transform=train_transform,
     )
-    
-    test_dataset = torchvision.datasets.CIFAR10(
-        root='./data', train=False, download=True, transform=transform
+    val_dataset = TinyImageNetValidation(
+        dataset_root / "val", train_dataset.class_to_idx, transform=val_transform,
     )
-    
-    pin_memory = True
-    
-    # Use provided generator or create a new seeded one
+    pin_memory = device is not None and device.type == 'cuda'
     if generator is None:
-        generator = torch.Generator()
-        generator.manual_seed(seed)
-    
+        generator = torch.Generator().manual_seed(seed)
+
     train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True, 
+        train_dataset, batch_size=batch_size, shuffle=True,
         num_workers=num_workers, pin_memory=pin_memory,
-        generator=generator, drop_last=drop_last
+        generator=generator, drop_last=drop_last,
     )
-    
     val_loader = DataLoader(
-        test_dataset, batch_size=batch_size, shuffle=False,
+        val_dataset, batch_size=batch_size, shuffle=False,
         num_workers=num_workers, pin_memory=pin_memory,
-        drop_last=drop_last
+        generator=torch.Generator().manual_seed(seed),
+        drop_last=False,  # Always evaluate the entire labeled validation split.
     )
-    
     return train_loader, val_loader
 
 
 # ==============================================================================
 # Training Functions
 # ==============================================================================
+
+def build_optimizer(model, lr=3e-4, weight_decay=0.05):
+    """AdamW with no decay on biases, norm parameters, or either WTConv scale layout."""
+    decay, no_decay = [], []
+    scale_names = {'base_scale', 'wt_scales', 'wavelet_scale'}
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if (param.ndim <= 1 or name.endswith('bias')
+                or scale_names.intersection(name.split('.'))):
+            no_decay.append(param)
+        else:
+            decay.append(param)
+    return optim.AdamW([
+        {'params': decay, 'weight_decay': weight_decay},
+        {'params': no_decay, 'weight_decay': 0.0},
+    ], lr=lr, betas=(0.9, 0.999))
+
+
+def learning_rate_for_epoch(epoch, epochs, lr, warmup_epochs=3, min_lr=1e-6):
+    """Linear epoch-wise warmup, then cosine decay to min_lr in the final epoch.
+
+    Short pilots cap warmup at epochs - 1; a single-epoch run uses the peak LR.
+    """
+    if epochs < 1 or not 0 <= epoch < epochs:
+        raise ValueError("epoch must be in [0, epochs), with epochs >= 1")
+    if warmup_epochs < 0 or lr <= 0 or not 0 <= min_lr <= lr:
+        raise ValueError("Require warmup_epochs >= 0 and 0 <= min_lr <= lr, with lr > 0")
+    warmup = min(warmup_epochs, epochs - 1)
+    if epoch < warmup:
+        return lr * (epoch + 1) / warmup
+    progress = (epoch - warmup) / max(epochs - warmup - 1, 1)
+    return min_lr + 0.5 * (lr - min_lr) * (1 + math.cos(math.pi * progress))
+
 
 def train_one_epoch(model, loader, optimizer, criterion, device, scaler=None, amp_dtype=None):
     """Train for one epoch and retain dynamic-loss-scaling behavior."""
@@ -356,7 +319,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device, scaler=None, am
         torch.cuda.synchronize()
     start_time = time.perf_counter()
     
-    for inputs, targets in tqdm(loader, desc="Training", leave=False):
+    for inputs, targets in loader:
         inputs, targets = inputs.to(device), targets.to(device)
         
         optimizer.zero_grad()
@@ -408,7 +371,7 @@ def validate_one_epoch(model, loader, criterion, device, amp_dtype=None):
         autocast_ctx = nullcontext()
     
     with torch.no_grad():
-        for inputs, targets in tqdm(loader, desc="Validation", leave=False):
+        for inputs, targets in loader:
             inputs, targets = inputs.to(device), targets.to(device)
             
             with autocast_ctx:
@@ -426,9 +389,17 @@ def validate_one_epoch(model, loader, criterion, device, amp_dtype=None):
 
 
 def train_model(model, train_loader, val_loader, epochs, lr, device, verbose=False, name="Model", 
-                amp_dtype=None, use_wandb=False):
+                amp_dtype=None, use_wandb=False, weight_decay=0.05,
+                warmup_epochs=3, min_lr=1e-6, seed=42):
     """Train model and return loss/accuracy/throughput history for both train and val."""
-    optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9)
+    optimizer = build_optimizer(model, lr=lr, weight_decay=weight_decay)
+    # Reset CPU/CUDA RNGs too: transforms run in the main process with workers=0.
+    # With workers>0, DataLoader seeds each worker from its dedicated generator.
+    torch.manual_seed(seed)
+    if train_loader.generator is not None:
+        train_loader.generator.manual_seed(seed)
+    if val_loader.generator is not None:
+        val_loader.generator.manual_seed(seed)
     criterion = nn.CrossEntropyLoss()
     
     # Setup gradient scaler for fp16 (CUDA only)
@@ -444,8 +415,13 @@ def train_model(model, train_loader, val_loader, epochs, lr, device, verbose=Fal
     grad_scale_start_history = []
     grad_scale_end_history = []
     skipped_updates_history = []
+    lr_history = []
     
     for epoch in range(epochs):
+        epoch_lr = learning_rate_for_epoch(epoch, epochs, lr, warmup_epochs, min_lr)
+        for group in optimizer.param_groups:
+            group['lr'] = epoch_lr
+        lr_history.append(epoch_lr)
         # Training
         (train_loss, train_acc, throughput, grad_scale_start, grad_scale_end,
          skipped_updates) = train_one_epoch(
@@ -471,11 +447,12 @@ def train_model(model, train_loader, val_loader, epochs, lr, device, verbose=Fal
                           if grad_scale_start is not None else "")
             print(f"  [{name}] Epoch {epoch+1:3d}: train_loss={train_loss:.4f}, "
                   f"train_acc={train_acc:.2f}%, val_loss={val_loss:.4f}, "
-                  f"val_acc={val_acc:.2f}%, {throughput:.1f} img/s{scale_text}")
+                  f"val_acc={val_acc:.2f}%, lr={epoch_lr:.2e}, {throughput:.1f} img/s{scale_text}")
         
         # Log to wandb
         if use_wandb:
             log_row = {
+                f"{name}/lr": epoch_lr,
                 f"{name}/train_loss": train_loss,
                 f"{name}/train_acc": train_acc,
                 f"{name}/val_loss": val_loss,
@@ -489,6 +466,7 @@ def train_model(model, train_loader, val_loader, epochs, lr, device, verbose=Fal
             wandb.log(log_row)
     
     return {
+        'lr': lr_history,
         'train_loss': train_loss_history,
         'train_acc': train_acc_history,
         'val_loss': val_loss_history,
@@ -504,50 +482,53 @@ def train_model(model, train_loader, val_loader, epochs, lr, device, verbose=Fal
 # Convergence Test
 # ==============================================================================
 
-def run_convergence_test(depth=2, epochs=10, batch_size=32, 
-                         img_size=256, lr=0.01, seed=42, 
-                         verbose=True, dtype=torch.float32, device=None, use_wandb=False,
-                         use_compile=False):
-    """Run convergence test comparing fused vs naive models on CIFAR-10. Uses full test set for validation."""
+def run_convergence_test(depth=None, epochs=50, batch_size=128,
+                         img_size=128, lr=3e-4, seed=42,
+                         verbose=True, dtype=torch.float16, device=None, use_wandb=False,
+                         use_compile=False, data_root='./data', num_workers=4,
+                         weight_decay=0.05, warmup_epochs=3, min_lr=1e-6):
+    """Run convergence test comparing fused vs naive models on Tiny ImageNet. Uses the full labeled validation split."""
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    learning_rate_for_epoch(0, epochs, lr, warmup_epochs, min_lr)
+    if weight_decay < 0:
+        raise ValueError("weight_decay must be nonnegative")
     dtype_name = DTYPE_NAMES[dtype]
     
     # Determine AMP dtype (None for fp32, use dtype for fp16/bf16)
     amp_dtype = None if dtype == torch.float32 else dtype
     
     print(f"\n{'='*70}")
-    print(f"Training Convergence Test: CIFAR-10 @ {img_size}x{img_size} [{dtype_name}]")
-    print(f"depth={depth}, epochs={epochs}, batch_size={batch_size}")
+    print(f"Training Convergence Test: WTConvNeXt Tiny on Tiny ImageNet @ {img_size}x{img_size} [{dtype_name}]")
+    wt_levels = DEFAULT_WT_LEVELS if depth is None else (depth,) * 4
+    print(f"wt_levels={wt_levels}, epochs={epochs}, batch_size={batch_size}")
+    print(f"AdamW: lr={lr:g}, weight_decay={weight_decay:g}, "
+          f"warmup_epochs={min(warmup_epochs, epochs - 1)}, cosine min_lr={min_lr:g}")
     print(f"{'='*70}")
     
     # Get data loaders - create shared generator for identical shuffle order
-    print("\n--- Loading CIFAR-10 ---")
+    print("\n--- Loading Tiny ImageNet ---")
     shared_generator = torch.Generator()
     shared_generator.manual_seed(seed)
     
-    train_loader_fused, val_loader_fused = get_cifar10_loaders(
+    train_loader_fused, val_loader_fused = get_tiny_imagenet_loaders(
         batch_size, img_size, device=device, seed=seed, drop_last=use_compile,
-        generator=shared_generator
+        generator=shared_generator, data_root=data_root, num_workers=num_workers,
     )
-    train_loader_naive, val_loader_naive = get_cifar10_loaders(
+    train_loader_naive, val_loader_naive = get_tiny_imagenet_loaders(
         batch_size, img_size, device=device, seed=seed, drop_last=use_compile,
-        generator=shared_generator  # Same generator = same shuffle order
+        generator=shared_generator, data_root=data_root, num_workers=num_workers,
     )
         
     # Create models with same initial weights
     torch.manual_seed(seed)
     
-    # Fused model (uses WTConv2d)
-    model_fused = WTMobileNet(WTConv2d, depth=depth).to(device)
-    
-    # Naive model with copied weights
-    torch.manual_seed(seed)  # Same seed for same initial weights
-    model_naive = WTMobileNet(WTConv2dNaive, depth=depth).to(device)
-    
-    # Copy all weights to ensure identical starting point
-    copy_full_model_weights(model_fused, model_naive, WTConv2d, WTConv2dNaive)
-    
+    # Use the reference architecture's initialization for both implementations.
+    model_naive = build_model(WTConv2dNaive, depth=depth).to(device)
+    torch.manual_seed(seed)
+    model_fused = build_model(WTConv2d, depth=depth).to(device)
+    copy_full_model_weights(model_naive, model_fused, WTConv2dNaive, WTConv2d)
+
     # Verify initial outputs match
     print("\n--- Verifying Initial State ---")
     model_fused.eval()
@@ -576,7 +557,8 @@ def run_convergence_test(depth=2, epochs=10, batch_size=32,
     # Reset the shared generator to ensure deterministic order
     shared_generator.manual_seed(seed)
     results_fused = train_model(
-        model_fused, train_loader_fused, val_loader_fused, epochs, lr, device, verbose, "Fused", amp_dtype, use_wandb
+        model_fused, train_loader_fused, val_loader_fused, epochs, lr, device, verbose, "Fused", amp_dtype, use_wandb,
+        weight_decay=weight_decay, warmup_epochs=warmup_epochs, min_lr=min_lr, seed=seed,
     )
     
     # Train naive model - reset generator to get same data order as fused
@@ -584,7 +566,8 @@ def run_convergence_test(depth=2, epochs=10, batch_size=32,
     # Reset the shared generator to same seed for identical data order
     shared_generator.manual_seed(seed)
     results_naive = train_model(
-        model_naive, train_loader_naive, val_loader_naive, epochs, lr, device, verbose, "Naive", amp_dtype, use_wandb
+        model_naive, train_loader_naive, val_loader_naive, epochs, lr, device, verbose, "Naive", amp_dtype, use_wandb,
+        weight_decay=weight_decay, warmup_epochs=warmup_epochs, min_lr=min_lr, seed=seed,
     )
     
     # Compare results
@@ -641,26 +624,36 @@ def run_convergence_test(depth=2, epochs=10, batch_size=32,
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Training Convergence Test on CIFAR-10")
-    parser.add_argument("--depth", type=int, default=2, choices=[1, 2, 3, 4, 5],
-                        help="WTConv depth (default: 2)")
-    parser.add_argument("--epochs", type=int, default=1,
-                        help="Number of training epochs (default: 10)")
-    parser.add_argument("--lr", type=float, default=0.01,
-                        help="Learning rate (default: 0.01)")
+    parser = argparse.ArgumentParser(description="WTConvNeXt Tiny Training Convergence Test on Tiny ImageNet")
+    parser.add_argument("--depth", type=int, default=None, choices=[1, 2, 3, 4, 5],
+                        help="Override WTConv levels in all stages (default: 5, 4, 3, 2)")
+    parser.add_argument("--epochs", type=int, default=50,
+                        help="Number of training epochs (default: 50)")
+    parser.add_argument("--lr", type=float, default=3e-4,
+                        help="Peak AdamW learning rate (default: 3e-4)")
+    parser.add_argument("--weight-decay", type=float, default=0.05,
+                        help="AdamW weight decay on convolution/linear weights (default: 0.05)")
+    parser.add_argument("--warmup-epochs", type=int, default=3,
+                        help="Linear warmup epochs, capped at epochs - 1 (default: 3)")
+    parser.add_argument("--min-lr", type=float, default=1e-6,
+                        help="Final cosine learning rate (default: 1e-6)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Shared initialization and data-order seed (default: 42)")
-    parser.add_argument("--batch-size", type=int, default=32,
-                        help="Batch size (default: 32)")
+    parser.add_argument("--batch-size", type=int, default=128,
+                        help="Batch size (default: 128)")
 
-    parser.add_argument("--img-size", type=int, default=256,
-                        help="Image size (default: 256)")
+    parser.add_argument("--img-size", type=int, default=128,
+                        help="Image size (default: 128)")
+    parser.add_argument("--data-root", type=Path, default=Path('./data'),
+                        help="Tiny ImageNet directory or its parent (default: ./data; downloads if missing)")
+    parser.add_argument("--num-workers", type=int, default=4,
+                        help="Data loader workers (default: 4)")
     parser.add_argument("--all-depths", action="store_true",
                         help="Test all depths (1-5)")
     parser.add_argument("--verbose", action="store_true",
                         help="Print loss/acc each epoch")
-    parser.add_argument("--dtype", choices=['fp32', 'fp16', 'bf16', 'all'], default='fp32',
-                        help="Data type for training (default: fp32, use 'all' for all types)")
+    parser.add_argument("--dtype", choices=['fp32', 'fp16', 'bf16', 'all'], default='fp16',
+                        help="Data type for training (default: fp16, use 'all' for all types)")
     parser.add_argument("--device", choices=['cuda', 'cpu'], default='cuda',
                         help="Device to test on (default: cuda)")
     parser.add_argument("--wandb", action="store_true",
@@ -670,6 +663,22 @@ def main():
     parser.add_argument("--out", type=Path,
                         help="optional JSON output path for all epoch histories")
     args = parser.parse_args()
+    try:
+        learning_rate_for_epoch(0, args.epochs, args.lr, args.warmup_epochs, args.min_lr)
+        if args.weight_decay < 0:
+            raise ValueError("weight_decay must be nonnegative")
+    except ValueError as error:
+        parser.error(str(error))
+    recipe = {
+        "optimizer": "AdamW",
+        "betas": [0.9, 0.999],
+        "weight_decay": args.weight_decay,
+        "weight_decay_exclusions": "biases, normalization parameters, learned scales",
+        "scheduler": "linear_warmup_cosine_epoch",
+        "warmup_epochs": min(args.warmup_epochs, args.epochs - 1),
+        "min_lr": args.min_lr,
+        "train_augmentation": "RandomResizedCrop(scale=(0.8, 1.0)), RandomHorizontalFlip(p=0.5)",
+    }
     
     # Set device
     if args.device == 'cuda' and torch.cuda.is_available():
@@ -698,6 +707,12 @@ def main():
         wandb.init(
             project="wtconv-convergence_compile",
             config={
+                **recipe,
+                "model": "wtconvnext_tiny",
+                "dataset": "tiny-imagenet-200",
+                "num_classes": 200,
+                "data_root": str(args.data_root),
+                "wt_levels": DEFAULT_WT_LEVELS if args.depth is None else (args.depth,) * 4,
                 "depth": args.depth,
                 "epochs": args.epochs,
                 "batch_size": args.batch_size,
@@ -723,18 +738,28 @@ def main():
                 dtype=dtype,
                 device=device,
                 use_wandb=use_wandb,
-                use_compile=args.compile
+                use_compile=args.compile,
+                data_root=args.data_root,
+                num_workers=args.num_workers,
+                weight_decay=args.weight_decay,
+                warmup_epochs=args.warmup_epochs,
+                min_lr=args.min_lr,
             )
             all_results.append({
+                **recipe,
                 "dtype": DTYPE_NAMES[dtype],
+                "model": "wtconvnext_tiny",
+                "dataset": "tiny-imagenet-200",
+                "num_classes": 200,
+                "data_root": str(args.data_root),
+                "wt_levels": DEFAULT_WT_LEVELS if depth is None else (depth,) * 4,
                 "depth": depth,
                 "epochs": args.epochs,
                 "batch_size": args.batch_size,
                 "img_size": args.img_size,
                 "lr": args.lr,
                 "seed": args.seed,
-                "optimizer": "SGD(lr={}, momentum=0.9)".format(args.lr),
-                "amp": dtype == torch.float16,
+                "amp": dtype != torch.float32 and device.type == 'cuda',
                 "fused": results_fused,
                 "reference": results_naive,
             })

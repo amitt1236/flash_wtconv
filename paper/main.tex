@@ -532,7 +532,7 @@ This work reduces the time and memory required to evaluate an existing operator 
 \appendix
 
 \clearpage
-\section{Reproducibility and artifact guide}
+\section{Reproducibility}
 \label{app:reproducibility}
 \input{appendix_repro.tex}
 
@@ -777,9 +777,9 @@ latencies underlying the ratios in \autoref{tab:latency-train},
 \autoref{tab:latency}, and \autoref{tab:k3}. Each entry is $m\pm s$ ms, where
 $m$ and $s$ are the geometric means, over the nine $(C,H)$ configurations in
 \autoref{sec:setup}, of the per-configuration mean and within-run standard
-deviation from 50 timed iterations. Ratios of central values reproduce the
-reported speedups before rounding. Plain-convolution entries are repeated
-because they do not depend on $L$.
+deviation from 50 timed iterations. Plain-convolution entries are repeated
+because they do not depend on $L$. \autoref{tab:correctness} quantifies the numerical agreement referenced in
+\autoref{sec:setup}.
 
 \begin{table}[htpb]
 \centering
@@ -861,8 +861,6 @@ WTConv, \textbf{fused} & \texttt{fp32} & $6.081\pm0.023$ & $6.891\pm0.027$ & $7.
 \end{tabular}
 \end{table}
 
-\autoref{tab:correctness} quantifies the numerical agreement referenced in
-\autoref{sec:setup}. 
 
 \input{results/tab_correctness.tex}
 
